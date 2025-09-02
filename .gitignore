@@ -1,0 +1,6 @@
+lfw-funneled.tgz
+venv
+students_faces_dataset
+lfw/
+data/
+.ipynb_checkpoints/
