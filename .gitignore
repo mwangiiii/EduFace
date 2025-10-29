@@ -4,3 +4,8 @@ students_faces_dataset
 lfw/
 data/
 .ipynb_checkpoints/
+__pycache__/
+verification_images/
+input_image/
+training_checkpoints/
+
