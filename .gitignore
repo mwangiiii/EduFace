@@ -11,3 +11,4 @@ training_checkpoints/
 
 siamese_model.h5
 saved_models/
+finetune_checkpoints/

@@ -1,0 +1,5 @@
+StudentName,StudentID,Status,Confidence,Timestamp
+Egara,Bahati,PRESENT ✅,0.97,2025-10-30 19:09:03
+Egara,Bahati,PRESENT ✅,0.95,2025-10-30 19:10:43
+michael,151731,PRESENT ✅,0.98,2025-10-30 19:11:40
+Egara,Bahati,PRESENT ✅,1.00,2025-10-30 19:12:44
