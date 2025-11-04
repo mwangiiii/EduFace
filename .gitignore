@@ -4,3 +4,13 @@ students_faces_dataset
 lfw/
 data/
 .ipynb_checkpoints/
+__pycache__/
+verification_images/
+input_image/
+training_checkpoints/
+
+siamese_model.h5
+saved_models/
+finetune_checkpoints/
+input_image/
+models/
