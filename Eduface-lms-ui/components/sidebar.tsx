@@ -64,7 +64,7 @@ export function Sidebar() {
       <div className="flex flex-col h-full">
         <div className="flex items-center justify-center h-14 border-b border-sidebar-border px-6">
           <div className="font-bold text-lg bg-gradient-to-r from-sidebar-primary to-sidebar-accent bg-clip-text text-transparent">
-            FaceAttend
+            EduFace
           </div>
         </div>
 

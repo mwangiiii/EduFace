@@ -10,6 +10,7 @@ import { Input } from "@/components/ui/input"
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card"
 import { AlertCircle } from "lucide-react"
 import { Alert, AlertDescription } from "@/components/ui/alert"
+import { supabase } from "@/lib/supabaseClient"
 
 export default function LoginPage() {
   const router = useRouter()
@@ -18,29 +19,56 @@ export default function LoginPage() {
   const [error, setError] = useState("")
   const [loading, setLoading] = useState(false)
 
-  const handleSubmit = (e: React.FormEvent) => {
+  const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault()
     setError("")
     setLoading(true)
 
-    // Mock login logic
-    setTimeout(() => {
-      if (!email || !password) {
-        setError("Please fill in all fields")
-        setLoading(false)
-        return
-      }
-
-      // Mock role detection based on email domain
-      let role = "student"
-      if (email.includes("admin")) role = "admin"
-      else if (email.includes("teacher")) role = "teacher"
-
-      localStorage.setItem("userRole", role)
-      localStorage.setItem("userEmail", email)
+    if (!email || !password) {
+      setError("Please fill in all fields")
       setLoading(false)
-      router.push("/dashboard")
-    }, 500)
+      return
+    }
+
+    const { data, error: supabaseError } = await supabase.auth.signInWithPassword({
+      email,
+      password,
+    })
+
+    if (supabaseError) {
+      setError(supabaseError.message)
+      setLoading(false)
+      return
+    }
+
+    if (!data.user) {
+      setError('Login failed: No user data returned')
+      setLoading(false)
+      return
+    }
+
+    // Fetch user profile from the custom 'users' table using email
+    const { data: userProfile, error: fetchError } = await supabase
+      .from('users')
+      .select('role, first_name, last_name')
+      .eq('email', email)
+      .single()
+
+    if (fetchError || !userProfile) {
+      // Optionally sign out if profile not found
+      await supabase.auth.signOut()
+      setError('User profile not found. Please contact support.')
+      setLoading(false)
+      return
+    }
+
+    // Store role and other info in localStorage
+    localStorage.setItem('userRole', userProfile.role)
+    localStorage.setItem('userEmail', email)
+    // Optionally store more: localStorage.setItem('userName', `${userProfile.first_name} ${userProfile.last_name}`)
+
+    setLoading(false)
+    router.push('/dashboard')
   }
 
   return (
