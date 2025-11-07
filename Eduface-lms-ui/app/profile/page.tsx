@@ -583,7 +583,7 @@ export default function ProfilePage() {
                         value={profile.student?.student_id || 'Not found - Contact admin'} 
                         disabled 
                         className={!profile.student?.student_id ? 'text-red-500' : ''}
-                      />
+                      />  
                     </div>
                   )}
                   <div>
