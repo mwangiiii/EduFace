@@ -16,20 +16,47 @@ import {
   FileText,
 } from "lucide-react"
 import { useState, useEffect } from "react"
+import { createClient } from '@supabase/supabase-js'
+
+const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL!
+const supabaseKey = process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY!
+const supabase = createClient(supabaseUrl, supabaseKey)
 
 export function Sidebar() {
   const pathname = usePathname()
   const [role, setRole] = useState<string>("student")
   const [mounted, setMounted] = useState(false)
+  const [loading, setLoading] = useState(true)
 
   useEffect(() => {
-    setMounted(true)
-    // Simulate getting role from session
-    const storedRole = localStorage.getItem("userRole") || "student"
-    setRole(storedRole)
+    async function init() {
+      setMounted(true)
+      const { data: { session } } = await supabase.auth.getSession()
+      if (session?.user.id) {
+        const { data: user, error } = await supabase
+          .from('users')
+          .select('role')
+          .eq('id', session.user.id)
+          .single()
+        
+        if (error) {
+          console.error('Error fetching user role:', error)
+          setRole('student') // fallback
+        } else if (user) {
+          setRole(user.role)
+        }
+      } else {
+        // No session, fallback
+        const storedRole = localStorage.getItem("userRole") || "student"
+        setRole(storedRole)
+      }
+      setLoading(false)
+    }
+
+    init()
   }, [])
 
-  if (!mounted || pathname === "/login" || pathname === "/signup" || pathname === "/reset-password") {
+  if (!mounted || loading || pathname === "/login" || pathname === "/signup" || pathname === "/reset-password") {
     return null
   }
 
