@@ -9,7 +9,6 @@ import { Textarea } from "@/components/ui/textarea"
 import { Badge } from "@/components/ui/badge"
 import { Edit2, Trash2, Plus, Search } from "lucide-react"
 import { useState, useEffect } from "react"
-import { createClient } from '@supabase/supabase-js'
 import { useRouter } from 'next/navigation'
 import {
   Dialog,
@@ -29,10 +28,7 @@ import {
 } from "@/components/ui/select"
 import { AlertCircle } from "lucide-react"
 import { Alert, AlertDescription } from "@/components/ui/alert"
-
-const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL!
-const supabaseKey = process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY!
-const supabase = createClient(supabaseUrl, supabaseKey)
+import { supabase, createUserWithoutSessionSwitch } from '@/lib/supabaseClient'
 
 interface User {
   id: string
@@ -116,7 +112,6 @@ export default function UserManagementPage() {
   async function fetchUsers() {
     try {
       setLoading(true)
-      // Simplified query to fetch all users without joins first to ensure base data loads
       const { data, error } = await supabase
         .from('users')
         .select(`
@@ -129,26 +124,22 @@ export default function UserManagementPage() {
 
       if (error) throw error
 
-      console.log('Fetched data:', data); // Debug log to check raw data
-
       const processedUsers: User[] = (data || []).map((u: any) => {
         const fullName = `${u.first_name || ''} ${u.last_name || ''}`.trim()
-        let status = u.status || 'active' // Use actual status if present, else default
+        let status = u.status || 'active'
         return {
           id: u.id,
           first_name: u.first_name || '',
           last_name: u.last_name || '',
           name: fullName || 'Unnamed User',
           email: u.email || '',
-          role: u.role || 'student', // Default if missing
+          role: u.role || 'student',
           status,
           student: u.students?.[0],
           teacher: u.teachers?.[0],
           administrator: u.administrators?.[0],
         }
       })
-
-      console.log('Processed users:', processedUsers); // Debug log
 
       setUsers(processedUsers)
     } catch (error) {
@@ -257,49 +248,32 @@ export default function UserManagementPage() {
     try {
       const generatedPassword = generatePassword()
 
-      // Step 1: Create auth user with Supabase Auth
-      const { data: authData, error: authError } = await supabase.auth.signUp({
+      // Use the helper function to create user without session switch
+      const result = await createUserWithoutSessionSwitch({
         email: trimmedEmail,
         password: generatedPassword,
-        options: {
-          data: { 
-            first_name: trimmedFirstName, 
-            last_name: trimmedLastName, 
-            role 
-          },
-        },
-      })
-
-      if (authError) {
-        console.error('Supabase Auth Error:', authError)
-        setFormError(authError.message)
-        setFormLoading(false)
-        return
-      }
-
-      if (!authData.user) {
-        setFormError("User creation failed: No user data returned")
-        setFormLoading(false)
-        return
-      }
-
-      // Step 2: Insert into users table (base profile)
-      const { error: userInsertError } = await supabase
-        .from("users")
-        .insert({
-          id: authData.user.id,
+        metadata: {
           first_name: trimmedFirstName,
           last_name: trimmedLastName,
-          email: trimmedEmail,
-          role,
-        })
+          role
+        }
+      })
 
-      if (userInsertError) {
-        console.error('User Insert Error:', userInsertError)
-        setFormError(`Profile creation failed: ${userInsertError.message}`)
+      if (!result.success || !result.user) {
+        setFormError(result.error || "User creation failed")
         setFormLoading(false)
         return
       }
+
+      // Step 2: Profile already created by createUserWithoutSessionSwitch helper
+// Check if helper function reported any errors
+if (result.error && !result.success) {
+  setFormError(result.error)
+  setFormLoading(false)
+  return
+}
+
+console.log('User and profile created successfully:', result.user.id)
 
       // Step 3: Insert into role-specific table
       let roleInsertError = null
@@ -307,7 +281,7 @@ export default function UserManagementPage() {
         const { error: studentInsertError } = await supabase
           .from("students")
           .insert({
-            user_id: authData.user.id,
+            user_id: result.user.id,
             student_id: trimmedRoleId,
             enrollment_date: new Date().toISOString().split('T')[0],
           })
@@ -317,7 +291,7 @@ export default function UserManagementPage() {
         const { error: teacherInsertError } = await supabase
           .from("teachers")
           .insert({
-            user_id: authData.user.id,
+            user_id: result.user.id,
             teacher_id: trimmedRoleId,
             department: trimmedDepartment,
             qualifications: null,
@@ -328,7 +302,7 @@ export default function UserManagementPage() {
         const { error: adminInsertError } = await supabase
           .from("administrators")
           .insert({
-            user_id: authData.user.id,
+            user_id: result.user.id,
             admin_id: trimmedRoleId,
           })
 
@@ -339,17 +313,17 @@ export default function UserManagementPage() {
         console.error(`${role.charAt(0).toUpperCase() + role.slice(1)} Insert Error:`, roleInsertError)
         setFormError(`${role.charAt(0).toUpperCase() + role.slice(1)} profile creation failed: ${roleInsertError.message}`)
         // Clean up users record only
-        await supabase.from("users").delete().eq('id', authData.user.id)
+        await supabase.from("users").delete().eq('id', result.user.id)
         setFormLoading(false)
         return
       }
 
-      // Success
+      // Success - Admin session is automatically maintained by helper function
       setFormLoading(false)
       setShowAddModal(false)
       setSuccessPassword(generatedPassword)
       setShowSuccessModal(true)
-      fetchUsers() // Refetch users to update list
+      fetchUsers()
       
     } catch (err) {
       console.error('Unexpected error during user creation:', err)
@@ -401,8 +375,6 @@ export default function UserManagementPage() {
         setFormLoading(false)
         return
       }
-
-      // Note: Updating the auth email requires server-side implementation using the service role key (e.g., via an Edge Function or Server Action) as client-side updates are limited to the current user.
 
       // Update role-specific table
       let roleUpdateError = null
@@ -527,7 +499,7 @@ export default function UserManagementPage() {
             <CardHeader>
               <div className="flex items-center justify-between">
                 <div>
-                  <CardTitle>Users ({users.length})</CardTitle> {/* Show total count for debug */}
+                  <CardTitle>Users ({users.length})</CardTitle>
                   <CardDescription>All registered users in the system</CardDescription>
                 </div>
                 <Dialog open={showAddModal} onOpenChange={(open) => { setShowAddModal(open); if (!open) resetForm(); }}>
@@ -618,7 +590,6 @@ export default function UserManagementPage() {
                         />
                       </div>
                       
-                      {/* Conditional fields based on role */}
                       {role === 'teacher' && (
                         <div className="space-y-2">
                           <label htmlFor="department" className="text-sm font-medium">
@@ -635,7 +606,6 @@ export default function UserManagementPage() {
                         </div>
                       )}
                       
-                      {/* Edit-specific fields */}
                       {isEditing && role === 'student' && (
                         <div className="space-y-2">
                           <label htmlFor="enrollmentDate" className="text-sm font-medium">
@@ -865,7 +835,6 @@ export default function UserManagementPage() {
               />
             </div>
             
-            {/* Conditional fields based on role */}
             {role === 'teacher' && (
               <div className="space-y-2">
                 <label htmlFor="department" className="text-sm font-medium">
@@ -882,7 +851,6 @@ export default function UserManagementPage() {
               </div>
             )}
             
-            {/* Edit-specific fields */}
             {isEditing && role === 'student' && (
               <div className="space-y-2">
                 <label htmlFor="enrollmentDate" className="text-sm font-medium">
