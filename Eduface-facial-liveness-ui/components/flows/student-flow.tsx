@@ -15,10 +15,10 @@ export default function StudentFlow({ onLogout }: StudentFlowProps) {
   const [step, setStep] = useState<StudentStep>("code-entry")
   const [sessionData, setSessionData] = useState<any>(null)
 
-  const handleCodeSubmit = (code: string) => {
-    setSessionData({ code, timestamp: new Date() })
-    setStep("facial-scan")
-  }
+ const handleCodeSubmit = (sessionId: string, accessCode: string) => {
+  setSessionData({ sessionId, accessCode, timestamp: new Date() })
+  setStep("facial-scan")
+}
 
   const handleScanComplete = (result: any) => {
     setSessionData((prev) => ({ ...prev, ...result }))
