@@ -129,6 +129,7 @@ export default function DashboardPage() {
       .from('enrollments')
       .select('*', { count: 'exact', head: true })
       .eq('student_id', userId)
+      .eq('status', 'active')
 
     setCoursesCount(enrollmentsCount || 0)
 
@@ -137,6 +138,7 @@ export default function DashboardPage() {
       .from('enrollments')
       .select('course_id')
       .eq('student_id', userId)
+      .eq('status', 'active')
 
     const courseIds = enrollments?.map(e => e.course_id) || []
 
@@ -147,13 +149,28 @@ export default function DashboardPage() {
       return
     }
 
-    // Fetch today's sessions for enrolled courses
+    // Fetch units for enrolled courses
+    const { data: units } = await supabase
+      .from('units')
+      .select('id')
+      .in('course_id', courseIds)
+
+    const unitIds = units?.map(u => u.id) || []
+
+    if (unitIds.length === 0) {
+      setPresentToday(0)
+      setAbsentToday(0)
+      setAttendanceRate('0%')
+      return
+    }
+
+    // Fetch today's sessions for enrolled units
     const { data: sessions } = await supabase
       .from('attendance_sessions')
       .select('id')
       .gte('date_time', `${today}T00:00:00Z`)
       .lt('date_time', `${tomorrow}T00:00:00Z`)
-      .in('course_id', courseIds)
+      .in('unit_id', unitIds)
 
     const totalSessionsToday = sessions?.length || 0
     const sessionIds = sessions?.map(s => s.id) || []
@@ -198,18 +215,26 @@ export default function DashboardPage() {
     const teacherId = teacher.id
 
     // Fetch count of assigned units (as "Classes/Courses")
-    const { count: unitsCount } = await supabase
-      .from('units')
+    const { count: assignmentsCount } = await supabase
+      .from('unit_teachers')
       .select('*', { count: 'exact', head: true })
       .eq('teacher_id', teacherId)
 
-    setTeacherCoursesCount(unitsCount || 0)
+    setTeacherCoursesCount(assignmentsCount || 0)
 
-    // Get teacher's units -> course_ids
+    // Get teacher's assignments to get unit_ids
+    const { data: assignments } = await supabase
+      .from('unit_teachers')
+      .select('unit_id')
+      .eq('teacher_id', teacherId)
+
+    const unitIds = [...new Set(assignments?.map(a => a.unit_id) || [])] // Distinct units
+
+    // Get course_ids from units
     const { data: units } = await supabase
       .from('units')
       .select('course_id')
-      .eq('teacher_id', teacherId)
+      .in('id', unitIds)
 
     const courseIds = [...new Set(units?.map(u => u.course_id) || [])] // Distinct courses
 
@@ -220,13 +245,21 @@ export default function DashboardPage() {
       return
     }
 
-    // Fetch today's sessions for teacher's courses
+    // Get teacher's unit_teacher_ids for sessions
+    const { data: teacherAssignments } = await supabase
+      .from('unit_teachers')
+      .select('id')
+      .eq('teacher_id', teacherId)
+
+    const unitTeacherIds = teacherAssignments?.map(ta => ta.id) || []
+
+    // Fetch today's sessions for teacher's assignments
     const { data: sessions } = await supabase
       .from('attendance_sessions')
-      .select('id')
+      .select('id, unit_id')
       .gte('date_time', `${today}T00:00:00Z`)
       .lt('date_time', `${tomorrow}T00:00:00Z`)
-      .in('course_id', courseIds)
+      .in('unit_teacher_id', unitTeacherIds)
 
     const sessionIds = sessions?.map(s => s.id) || []
 
@@ -234,28 +267,28 @@ export default function DashboardPage() {
     let totalExpected = 0
 
     // For each session, get enrollments count (expected) and present count
-    for (const sessionId of sessionIds) {
-      // Get session's course_id
-      const { data: session } = await supabase
-        .from('attendance_sessions')
+    for (const session of sessions || []) {
+      // Get unit_id to get course_id
+      const { data: unit } = await supabase
+        .from('units')
         .select('course_id')
-        .eq('id', sessionId)
+        .eq('id', session.unit_id)
         .single()
 
-      if (!session) continue
+      if (!unit) continue
 
       // Expected: active enrollments for the course
       const { count: expected } = await supabase
         .from('enrollments')
         .select('*', { count: 'exact', head: true })
-        .eq('course_id', session.course_id)
+        .eq('course_id', unit.course_id)
         .eq('status', 'active')
 
       // Present: records with 'present' for this session
       const { count: present } = await supabase
         .from('attendance_records')
         .select('*', { count: 'exact', head: true })
-        .eq('session_id', sessionId)
+        .eq('session_id', session.id)
         .eq('status', 'present')
 
       totalExpected += expected || 0
@@ -284,23 +317,30 @@ export default function DashboardPage() {
     // Fetch today's sessions
     const { data: sessions } = await supabase
       .from('attendance_sessions')
-      .select('id, course_id')
+      .select('id, unit_id')
       .gte('date_time', `${today}T00:00:00Z`)
       .lt('date_time', `${tomorrow}T00:00:00Z`)
       .eq('status', 'completed') // Assume only completed sessions have records
-
-    const sessionIds = sessions?.map(s => s.id) || []
 
     let totalPresent = 0
     let totalExpected = 0
 
     // For each session, get expected and present
     for (const session of sessions || []) {
+      // Get unit_id to get course_id
+      const { data: unit } = await supabase
+        .from('units')
+        .select('course_id')
+        .eq('id', session.unit_id)
+        .single()
+
+      if (!unit) continue
+
       // Expected: active enrollments for the course
       const { count: expected } = await supabase
         .from('enrollments')
         .select('*', { count: 'exact', head: true })
-        .eq('course_id', session.course_id)
+        .eq('course_id', unit.course_id)
         .eq('status', 'active')
 
       // Present: records with 'present' for this session
@@ -328,23 +368,43 @@ export default function DashboardPage() {
       const userId = userProfile!.id
       const now = new Date().toISOString()
 
+      // Get student's ID from students table
+      const { data: student } = await supabase
+        .from('students')
+        .select('id')
+        .eq('user_id', userId)
+        .single()
+
+      if (!student) return
+
       // Get enrolled course_ids
       const { data: enrollments } = await supabase
         .from('enrollments')
         .select('course_id')
-        .eq('student_id', userId)
+        .eq('student_id', student.id)
+        .eq('status', 'active')
 
       const courseIds = enrollments?.map(e => e.course_id) || []
 
       if (courseIds.length === 0) return
 
-      // Fetch upcoming sessions for enrolled courses
+      // Fetch units for enrolled courses
+      const { data: units } = await supabase
+        .from('units')
+        .select('id')
+        .in('course_id', courseIds)
+
+      const unitIds = units?.map(u => u.id) || []
+
+      if (unitIds.length === 0) return
+
+      // Fetch upcoming sessions for enrolled units
       const { data: sessions, error: sessionsError } = await supabase
         .from('attendance_sessions')
         .select(`
-          id, session_id, date_time, duration, room, status, course_id
+          id, session_id, date_time, duration, room, status, unit_id, unit_teacher_id
         `)
-        .in('course_id', courseIds)
+        .in('unit_id', unitIds)
         .gt('date_time', now)
         .order('date_time', { ascending: true })
         .limit(10)
@@ -354,48 +414,60 @@ export default function DashboardPage() {
         return
       }
 
-      // For each session, fetch course name, unit name (if any), and teacher name
+      // For each session, fetch course name, unit name, and teacher name
       const sessionsWithDetails: UpcomingSession[] = await Promise.all(
         (sessions || []).map(async (session) => {
+          // Fetch unit to get course_id and name
+          const { data: unit } = await supabase
+            .from('units')
+            .select('name, course_id')
+            .eq('id', session.unit_id)
+            .single()
+
+          if (!unit) return null
+
           // Fetch course name
           const { data: course } = await supabase
             .from('courses')
             .select('name')
-            .eq('id', session.course_id)
-            .single()
-
-          // Fetch unit (assuming one unit per session/course for simplicity; adjust if multiple)
-          const { data: unit } = await supabase
-            .from('units')
-            .select('name, teacher_id')
-            .eq('course_id', session.course_id)
-            .limit(1)
+            .eq('id', unit.course_id)
             .single()
 
           let teacherName = ''
-          if (unit?.teacher_id) {
-            const { data: t } = await supabase
-              .from('teachers')
-              .select('user_id')
-              .eq('id', unit.teacher_id)
+          if (session.unit_teacher_id) {
+            const { data: ut } = await supabase
+              .from('unit_teachers')
+              .select('teacher_id')
+              .eq('id', session.unit_teacher_id)
               .single()
-            if (t?.user_id) {
-              const { data: u } = await supabase
-                .from('users')
-                .select('first_name, last_name')
-                .eq('id', t.user_id)
+
+            if (ut?.teacher_id) {
+              const { data: t } = await supabase
+                .from('teachers')
+                .select('user_id')
+                .eq('id', ut.teacher_id)
                 .single()
-              teacherName = `${u?.first_name || ''} ${u?.last_name || ''}`.trim()
+              if (t?.user_id) {
+                const { data: u } = await supabase
+                  .from('users')
+                  .select('first_name, last_name')
+                  .eq('id', t.user_id)
+                  .single()
+                teacherName = `${u?.first_name || ''} ${u?.last_name || ''}`.trim()
+              }
             }
           }
+
+          // Format duration (interval to readable string)
+          const durationStr = session.duration || '1 hour' // Default if null, but schema says not null
 
           return {
             id: session.id,
             session_id: session.session_id,
             course_name: course?.name || 'Unknown Course',
-            unit_name: unit?.name || undefined,
+            unit_name: unit.name,
             date_time: new Date(session.date_time).toLocaleString(),
-            duration: session.duration,
+            duration: durationStr,
             room: session.room,
             status: session.status,
             teacher_name: teacherName || undefined
@@ -403,7 +475,7 @@ export default function DashboardPage() {
         })
       )
 
-      setUpcomingSessions(sessionsWithDetails)
+      setUpcomingSessions(sessionsWithDetails.filter(s => s !== null) as UpcomingSession[])
     } catch (error) {
       console.error('Unexpected error fetching upcoming sessions:', error)
     } finally {
@@ -428,24 +500,26 @@ export default function DashboardPage() {
 
       const teacherId = teacher.id
 
-      // Get teacher's units and course_ids
-      const { data: units } = await supabase
-        .from('units')
-        .select('id, course_id, name')
+      // Get teacher's assignments to get unit_teacher_ids and units
+      const { data: assignments, error: assError } = await supabase
+        .from('unit_teachers')
+        .select(`
+          id, unit_id, schedule
+        `)
         .eq('teacher_id', teacherId)
 
-      const courseIds = [...new Set(units?.map(u => u.course_id) || [])]
-      const unitMap = new Map(units?.map(u => [u.course_id, { name: u.name, unitId: u.id }]) || [])
+      if (assError || !assignments || assignments.length === 0) return
 
-      if (courseIds.length === 0) return
+      const unitTeacherIds = assignments.map(a => a.id)
+      const unitMap = new Map(assignments.map(a => [a.unit_id, { unitId: a.unit_id, schedule: a.schedule }]))
 
-      // Fetch upcoming sessions for teacher's courses
+      // Fetch upcoming sessions for teacher's assignments
       const { data: sessions, error } = await supabase
         .from('attendance_sessions')
         .select(`
-          id, session_id, date_time, duration, room, status, course_id
+          id, session_id, date_time, duration, room, status, unit_id, unit_teacher_id
         `)
-        .in('course_id', courseIds)
+        .in('unit_teacher_id', unitTeacherIds)
         .gt('date_time', now)
         .order('date_time', { ascending: true })
         .limit(10)
@@ -457,30 +531,39 @@ export default function DashboardPage() {
 
       const sessionsWithDetails: UpcomingSession[] = await Promise.all(
         (sessions || []).map(async (session) => {
+          // Fetch unit to get course_id and name
+          const { data: unit } = await supabase
+            .from('units')
+            .select('name, course_id')
+            .eq('id', session.unit_id)
+            .single()
+
+          if (!unit) return null
+
           // Fetch course name
           const { data: course } = await supabase
             .from('courses')
             .select('name')
-            .eq('id', session.course_id)
+            .eq('id', unit.course_id)
             .single()
 
-          const unitInfo = unitMap.get(session.course_id)
-          const unit_name = unitInfo?.name
+          // Format duration
+          const durationStr = session.duration || '1 hour'
 
           return {
             id: session.id,
             session_id: session.session_id,
             course_name: course?.name || 'Unknown Course',
-            unit_name,
+            unit_name: unit.name,
             date_time: new Date(session.date_time).toLocaleString(),
-            duration: session.duration,
+            duration: durationStr,
             room: session.room,
             status: session.status
           }
         })
       )
 
-      setUpcomingSessions(sessionsWithDetails)
+      setUpcomingSessions(sessionsWithDetails.filter(s => s !== null) as UpcomingSession[])
     } catch (error) {
       console.error('Unexpected error fetching upcoming sessions:', error)
     } finally {
