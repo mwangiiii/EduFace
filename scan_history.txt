@@ -1,0 +1,145 @@
+
+======================================================================
+SCAN TIMESTAMP: 2025-11-11 17:12:35
+Student: Maximillian (ID: 150651)
+Status: VERIFIED
+Frames: 5
+Summary: 5 frames, medians:['0.999', '0.999', '1.000', '1.000', '1.000'], overall:0.9997
+----------------------------------------------------------------------
+
+Frame 1: input_scan_150651_f1_1762870336943.jpg
+  Scores: 15
+  Median: 0.9995
+
+Frame 2: input_scan_150651_f2_1762870337509.jpg
+  Scores: 15
+  Median: 0.9991
+
+Frame 3: input_scan_150651_f3_1762870338039.jpg
+  Scores: 15
+  Median: 0.9997
+
+Frame 4: input_scan_150651_f4_1762870338595.jpg
+  Scores: 15
+  Median: 0.9998
+
+Frame 5: input_scan_150651_f5_1762870339128.jpg
+  Scores: 15
+  Median: 0.9997
+======================================================================
+
+======================================================================
+SCAN TIMESTAMP: 2025-11-11 17:25:00
+Student: Tiffany (ID: 150364)
+Status: VERIFIED
+Frames: 5
+Summary: 5 frames, medians:['1.000', '0.999', '1.000', '1.000', '0.999'], overall:0.9998
+----------------------------------------------------------------------
+
+Frame 1: input_scan_150364_f1_1762871082879.jpg
+  Scores: 15
+  Median: 0.9999
+
+Frame 2: input_scan_150364_f2_1762871083423.jpg
+  Scores: 15
+  Median: 0.9991
+
+Frame 3: input_scan_150364_f3_1762871083937.jpg
+  Scores: 15
+  Median: 0.9998
+
+Frame 4: input_scan_150364_f4_1762871084488.jpg
+  Scores: 15
+  Median: 0.9998
+
+Frame 5: input_scan_150364_f5_1762871085005.jpg
+  Scores: 15
+  Median: 0.9992
+======================================================================
+
+======================================================================
+SCAN TIMESTAMP: 2025-11-11 17:25:32
+Student: Tiffany (ID: 150364)
+Status: VERIFIED
+Frames: 5
+Summary: 5 frames, medians:['0.989', '0.993', '0.993', '0.987', '0.994'], overall:0.9928
+----------------------------------------------------------------------
+
+Frame 1: input_scan_150364_f1_1762871114892.jpg
+  Scores: 15
+  Median: 0.9886
+
+Frame 2: input_scan_150364_f2_1762871115401.jpg
+  Scores: 15
+  Median: 0.9930
+
+Frame 3: input_scan_150364_f3_1762871115896.jpg
+  Scores: 15
+  Median: 0.9928
+
+Frame 4: input_scan_150364_f4_1762871116361.jpg
+  Scores: 15
+  Median: 0.9868
+
+Frame 5: input_scan_150364_f5_1762871116860.jpg
+  Scores: 15
+  Median: 0.9939
+======================================================================
+
+======================================================================
+SCAN TIMESTAMP: 2025-11-11 17:26:47
+Student: Tiffany (ID: 150364)
+Status: VERIFIED
+Frames: 5
+Summary: 5 frames, medians:['0.995', '0.995', '0.994', '0.998', '0.997'], overall:0.9952
+----------------------------------------------------------------------
+
+Frame 1: input_scan_150364_f1_1762871189779.jpg
+  Scores: 15
+  Median: 0.9950
+
+Frame 2: input_scan_150364_f2_1762871190292.jpg
+  Scores: 15
+  Median: 0.9952
+
+Frame 3: input_scan_150364_f3_1762871190786.jpg
+  Scores: 15
+  Median: 0.9941
+
+Frame 4: input_scan_150364_f4_1762871191298.jpg
+  Scores: 15
+  Median: 0.9980
+
+Frame 5: input_scan_150364_f5_1762871191777.jpg
+  Scores: 15
+  Median: 0.9974
+======================================================================
+
+======================================================================
+SCAN TIMESTAMP: 2025-11-11 17:27:25
+Student: Njoki (ID: 1000000)
+Status: VERIFIED
+Frames: 5
+Summary: 5 frames, medians:['0.997', '0.998', '0.997', '0.996', '0.997'], overall:0.9971
+----------------------------------------------------------------------
+
+Frame 1: input_scan_1000000_f1_1762871227859.jpg
+  Scores: 15
+  Median: 0.9971
+
+Frame 2: input_scan_1000000_f2_1762871228386.jpg
+  Scores: 15
+  Median: 0.9985
+
+Frame 3: input_scan_1000000_f3_1762871228879.jpg
+  Scores: 15
+  Median: 0.9972
+
+Frame 4: input_scan_1000000_f4_1762871229381.jpg
+  Scores: 15
+  Median: 0.9958
+
+Frame 5: input_scan_1000000_f5_1762871229874.jpg
+  Scores: 15
+  Median: 0.9968
+======================================================================
