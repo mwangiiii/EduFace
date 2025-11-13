@@ -72,10 +72,11 @@ Deno.serve(async (req)=>{
     console.log("Session validated (ID:", session.id, ")");
     // === 4. VERIFY FACE ENROLLMENT ===
     console.log("Checking face embeddings...");
-    const { count, error: embedErr } = await supabaseAdmin.from("face_embeddings").select("*", {
-      count: "exact",
-      head: true
-    }).eq("student_id", student_uuid);
+    // Ensure we use the UUID for face_embeddings queries
+    const { count, error: embedErr } = await supabaseAdmin
+      .from("face_embeddings")
+      .select("*", { count: "exact", head: true })
+      .eq("student_id", student_uuid); // student_uuid is the UUID
     if (embedErr || !count || count === 0) {
       return notFound("Face not enrolled", "Please complete face enrollment first.");
     }
@@ -106,9 +107,14 @@ Deno.serve(async (req)=>{
     }
     console.log("Liveness passed:", livenessScore);
     // === 7. FETCH BEST REFERENCE IMAGE ===
-    const { data: embedding } = await supabaseAdmin.from("face_embeddings").select("reference_image_url, quality_score").eq("student_id", student_uuid).order("quality_score", {
-      ascending: false
-    }).limit(1).single();
+    // Use UUID for fetching best reference image
+    const { data: embedding } = await supabaseAdmin
+      .from("face_embeddings")
+      .select("reference_image_url, quality_score")
+      .eq("student_id", student_uuid)
+      .order("quality_score", { ascending: false })
+      .limit(1)
+      .single();
     if (!embedding?.reference_image_url) {
       return notFound("Reference image missing", "No valid reference image found.");
     }
