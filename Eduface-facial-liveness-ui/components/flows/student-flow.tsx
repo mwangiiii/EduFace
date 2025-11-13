@@ -58,6 +58,7 @@ export default function StudentFlow({ onLogout }: StudentFlowProps) {
         />
       )}
       
+      
       {step === "confirmation" && (
         <AttendanceConfirmation 
           data={sessionData} 
