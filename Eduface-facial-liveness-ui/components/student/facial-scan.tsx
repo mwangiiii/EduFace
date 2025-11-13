@@ -3,182 +3,239 @@
 import { useState, useEffect, useRef } from "react"
 import { Button } from "@/components/ui/button"
 import { Card } from "@/components/ui/card"
+import { Input } from "@/components/ui/input"
+import { Label } from "@/components/ui/label"
 
 interface FacialScanProps {
   onComplete: (result: any) => void
   onBack: () => void
+  sessionData: any
+  accessCode: string
 }
 
-export default function FacialScan({ onComplete, onBack }: FacialScanProps) {
+export default function FacialScan({ onComplete, onBack, sessionData, accessCode }: FacialScanProps) {
+  const [studentId, setStudentId] = useState("")
+  const [studentUuid, setStudentUuid] = useState<string | null>(null)
+  const [lookupError, setLookupError] = useState<string | null>(null)
+
   const [scanning, setScanning] = useState(false)
   const [challenge, setChallenge] = useState<"blink" | "smile" | "turn" | null>(null)
   const [progress, setProgress] = useState(0)
   const [image, setImage] = useState<string | null>(null)
-  const [livenessResult, setLivenessResult] = useState<any>(null)
   const [stream, setStream] = useState<MediaStream | null>(null)
+  const [cameraReady, setCameraReady] = useState(false)
   const videoRef = useRef<HTMLVideoElement>(null)
 
+  // === LOG PROPS ON MOUNT ===
+  useEffect(() => {
+    console.log("FacialScan received:", { sessionData })
+  }, [sessionData])
+
+  // === STUDENT LOOKUP ===
+  const lookupStudent = async () => {
+    if (!studentId.trim()) {
+      setLookupError("Please enter your Student ID")
+      return
+    }
+    try {
+      setLookupError(null)
+      const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL
+      const anonKey = process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY
+      if (!supabaseUrl || !anonKey) throw new Error("Supabase config missing")
+
+      const res = await fetch(
+        `${supabaseUrl}/rest/v1/students?student_id=eq.${studentId.trim()}&select=id`,
+        {
+          headers: {
+            apikey: anonKey,
+            Authorization: `Bearer ${anonKey}`,
+            "Content-Type": "application/json",
+          },
+        }
+      )
+      if (!res.ok) throw new Error(`Student lookup failed: ${res.status}`)
+      const data = await res.json()
+
+      if (!data || data.length === 0) {
+        setLookupError("Student ID not found.")
+        return
+      }
+
+      const uuid = data[0].id
+      setStudentUuid(uuid)
+      await startCamera()
+    } catch (error: any) {
+      setLookupError("Failed to verify Student ID.")
+      console.error(error)
+    }
+  }
+
+  // === CAMERA ===
   const startCamera = async () => {
     try {
+      setCameraReady(false)
       const mediaStream = await navigator.mediaDevices.getUserMedia({
-        video: { width: 640, height: 480, facingMode: 'user' },
-        audio: false
+        video: { width: 640, height: 480, facingMode: "user" },
+        audio: false,
       })
+
       if (videoRef.current) {
         videoRef.current.srcObject = mediaStream
-        videoRef.current.play()
+        await new Promise<void>((resolve, reject) => {
+          const video = videoRef.current!
+          const onReady = () => {
+            if (video.readyState >= 2 && video.videoWidth > 0) {
+              setCameraReady(true)
+              resolve()
+            }
+          }
+          video.onloadedmetadata = onReady
+          video.oncanplay = onReady
+          video.play().catch(reject)
+          setTimeout(() => reject(new Error("Camera timeout")), 10000)
+        })
       }
       setStream(mediaStream)
-    } catch (error) {
-      console.error("Error accessing camera:", error)
-      alert("Camera access denied or unavailable. Please allow camera permissions and try again.")
-      setScanning(false)
+    } catch (err) {
+      alert("Camera access denied. Please allow camera and try again.")
+      stopCamera()
     }
   }
 
   const stopCamera = () => {
-    if (stream) {
-      stream.getTracks().forEach(track => track.stop())
-      setStream(null)
-      if (videoRef.current) {
-        videoRef.current.srcObject = null
-      }
-    }
+    setCameraReady(false)
+    stream?.getTracks().forEach((t) => t.stop())
+    setStream(null)
+    if (videoRef.current) videoRef.current.srcObject = null
   }
 
+  // === START SCAN ===
   const startScan = async () => {
-    await startCamera()
+    if (!studentUuid) return alert("Verify Student ID first")
+    if (!cameraReady) return alert("Camera not ready")
+    if (!accessCode) {
+      alert("Session access code missing. Please contact your instructor or try again from the session dashboard.");
+      return;
+    }
     setScanning(true)
-    // Delay capture slightly to ensure video is playing
-    setTimeout(captureAndSendFrame, 500)
+    setTimeout(captureAndSendFrame, 1000)
   }
 
-  const captureAndSendFrame = async () => {
+  // === CAPTURE & SEND ===
+  // ...imports and component definition stay the same...
+
+// === CAPTURE & SEND ===
+const captureAndSendFrame = async () => {
   try {
-    const video = videoRef.current
-    if (!video || video.videoWidth === 0) {
-      throw new Error("Video not ready")
-    }
+    const video = videoRef.current;
+    if (!video || !studentUuid) throw new Error("Missing video or student");
 
-    // Capture the current frame from the camera
-    const canvas = document.createElement("canvas")
-    canvas.width = video.videoWidth
-    canvas.height = video.videoHeight
-    const ctx = canvas.getContext("2d")
-    if (ctx) ctx.drawImage(video, 0, 0)
-    const base64 = canvas.toDataURL("image/jpeg", 0.8).split(",")[1] // 80% quality for smaller size
-    setImage(base64)
+    const canvas = document.createElement("canvas");
+    canvas.width = video.videoWidth;
+    canvas.height = video.videoHeight;
+    const ctx = canvas.getContext("2d");
+    if (!ctx) throw new Error("Canvas context failed");
+    ctx.drawImage(video, 0, 0);
+    const base64 = canvas.toDataURL("image/jpeg", 0.8).split(",")[1];
+    setImage(base64);
 
-    console.log("Sending image to Supabase..."); // Debug log
-
-    // Send the captured frame to the backend
     const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL;
     const anonKey = process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY;
-    if (!supabaseUrl || !anonKey) {
-      throw new Error("Supabase env vars not set");
-    }
+    if (!supabaseUrl || !anonKey) throw new Error("Supabase config missing");
 
-    const res = await fetch(`${supabaseUrl}/functions/v1/rapid-handler  `, {  // <-- Fixed URL here
-      method: "POST",
-      mode: "cors", // Explicitly set
-      headers: {
-        "Content-Type": "application/json",
-        "Authorization": `Bearer ${anonKey}`,
-      },
-      body: JSON.stringify({ image: base64 })
+    const body = {
+      student_uuid: studentUuid,
+      image: base64,
+      access_code: accessCode,
+    };
+
+    console.log("Sending to rapid-handler:", {
+      student_uuid: studentUuid,
+      access_code: accessCode,
+      image_size: base64.length,
     });
 
-    console.log("Response status:", res.status); // Debug log
+    const res = await fetch(`${supabaseUrl}/functions/v1/rapid-handler`, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        Authorization: `Bearer ${anonKey}`,
+      },
+      body: JSON.stringify(body),
+    });
 
     if (!res.ok) {
-      const errorText = await res.text();
-      throw new Error(`HTTP ${res.status}: ${errorText}`);
+      const err = await res.text();
+      throw new Error(`Server error: ${err}`);
     }
 
-    const data = await res.json()
-    setLivenessResult(data)
-    console.log("Liveness result:", data)
+    const data = await res.json();
+    console.log("rapid-handler response:", data);
 
-    if (data.liveness_score >= 0.5) {
+    if (data.siamese?.similarity > 0.8) {
       stopCamera();
       onComplete({
         success: true,
-        confidence: data.liveness_score,
+        studentId,
+        studentUuid,
+        sessionId: sessionData?.session_id,
+        sessionUuid: sessionData?.id,
+        unitId: sessionData?.unit_id,
+        unitName: sessionData?.unit?.name,
+        confidence: data.siamese.similarity,
+        livenessScore: data.liveness?.liveness_score || 0,
         timestamp: new Date(),
-      })
+      });
     } else {
-      alert("Spoof detected. Please try again.")
-      setScanning(false)
-      stopCamera();
+      alert(`Face mismatch: ${(data.siamese?.similarity * 100).toFixed(1)}%`);
+      setScanning(false);
     }
-  } catch (error) {
-    console.error("Error during liveness detection:", error)
-    alert(`Liveness detection failed: ${error.message}`)
-    setScanning(false)
+  } catch (err: any) {
+    console.error("Liveness scan failed:", err);
+    alert(`Liveness failed: ${err.message}`);
+    setScanning(false);
     stopCamera();
   }
-}
+};
 
+  // === CHALLENGE CYCLE ===
   useEffect(() => {
     if (!scanning) return
-
-    // Simulate anti-spoofing challenges
     const challenges: Array<"blink" | "smile" | "turn"> = ["blink", "smile", "turn"]
-    let currentChallenge = 0
-
+    let i = 0
     const timer = setInterval(() => {
-      if (currentChallenge < challenges.length) {
-        setChallenge(challenges[currentChallenge])
-        currentChallenge++
+      if (i < challenges.length) {
+        setChallenge(challenges[i++])
       } else {
         clearInterval(timer)
-        // Optionally call captureAndSendFrame here if you want post-challenge verification
         setScanning(false)
-        stopCamera();
-        onComplete({
-          facialMatch: true,
-          confidence: 0.98,
-          timestamp: new Date(),
-          challenges: challenges,
-        })
       }
     }, 2000)
-
     return () => clearInterval(timer)
-  }, [scanning, onComplete])
+  }, [scanning])
 
   useEffect(() => {
-    if (challenge) {
-      const progressTimer = setInterval(() => {
-        setProgress((p) => {
-          if (p >= 100) {
-            clearInterval(progressTimer)
-            return 100
-          }
-          return p + 10
-        })
-      }, 200)
-      return () => clearInterval(progressTimer)
-    }
+    if (!challenge) return
+    const t = setInterval(() => setProgress((p) => (p >= 100 ? 100 : p + 10)), 200)
+    return () => clearInterval(t)
   }, [challenge])
 
-  useEffect(() => {
-    return () => {
-      stopCamera() 
-    }
-  }, [])
+  useEffect(() => () => stopCamera(), [])
 
   const getChallengeText = () => {
     switch (challenge) {
-      case "blink":
-        return "Blink your eyes"
-      case "smile":
-        return "Smile for the camera"
-      case "turn":
-        return "Turn your head slightly"
-      default:
-        return "Initializing facial scan..."
+      case "blink": return "Blink your eyes"
+      case "smile": return "Smile for the camera"
+      case "turn": return "Turn your head slightly"
+      default: return "Hold still..."
     }
+  }
+
+  const handleResetStudent = () => {
+    setStudentUuid(null)
+    setStudentId("")
+    setLookupError(null)
+    stopCamera()
   }
 
   return (
@@ -186,56 +243,97 @@ export default function FacialScan({ onComplete, onBack }: FacialScanProps) {
       <div className="w-full max-w-md">
         <div className="text-center mb-8">
           <h1 className="text-3xl font-bold text-foreground mb-2">Facial Recognition</h1>
-          <p className="text-muted-foreground">Position your face in the frame</p>
+          <p className="text-muted-foreground">
+            {!studentUuid ? "Enter your Student ID" : "Position your face in the frame"}
+          </p>
         </div>
 
         <Card className="p-8 border border-border">
-          <div className="relative w-full aspect-square bg-muted rounded-lg overflow-hidden mb-6">
-            {/* Camera feed */}
-            <video
-              ref={videoRef}
-              autoPlay
-              playsInline
-              muted
-              className="w-full h-full object-cover"
-              style={{ display: scanning ? 'block' : 'none' }}
-            />
-            {/* Fallback simulation if not scanning */}
-            {!scanning && (
-              <div className="absolute inset-0 flex items-center justify-center">
-                <div className="w-32 h-40 border-2 border-primary rounded-2xl animate-pulse-subtle" />
-              </div>
-            )}
-
-            {/* Scan line animation */}
-            {challenge && (
-              <div className="absolute inset-0 bg-gradient-to-b from-transparent via-accent/20 to-transparent animate-scan-line" />
-            )}
-          </div>
-
-          <div className="space-y-4">
-            <div className="text-center">
-              <p className="text-lg font-semibold text-foreground mb-2">{getChallengeText()}</p>
-              <div className="w-full bg-muted rounded-full h-2 overflow-hidden">
-                <div className="bg-accent h-full transition-all duration-200" style={{ width: `${progress}%` }} />
-              </div>
-            </div>
-
-            <div className="flex gap-3">
-              <Button variant="outline" onClick={onBack} className="flex-1 bg-transparent">
-                Back
-              </Button>
-              {!scanning ? (
-                <Button onClick={startScan} className="flex-1">
-                  Start Scan
-                </Button>
-              ) : (
-                <Button disabled className="flex-1 bg-accent text-accent-foreground">
-                  Scanning...
-                </Button>
+          {/* === STUDENT ID ENTRY === */}
+          {!studentUuid && (
+            <div className="space-y-4">
+              {sessionData?.unit?.name && (
+                <div className="mb-4 p-3 bg-primary/5 rounded-md text-sm">
+                  <p className="text-xs text-muted-foreground">Session:</p>
+                  <p className="font-semibold">{sessionData.unit.name}</p>
+                </div>
               )}
+
+              <div>
+                <Label htmlFor="studentId">Student ID</Label>
+                <Input
+                  id="studentId"
+                  placeholder="e.g., STU12345"
+                  value={studentId}
+                  onChange={(e) => setStudentId(e.target.value)}
+                  onKeyPress={(e) => e.key === "Enter" && lookupStudent()}
+                  className="mt-2"
+                />
+                {lookupError && <p className="text-sm text-destructive mt-2">{lookupError}</p>}
+              </div>
+
+              <div className="flex gap-3">
+                <Button variant="outline" onClick={onBack} className="flex-1">
+                  Change Session
+                </Button>
+                <Button onClick={lookupStudent} className="flex-1">
+                  Verify ID
+                </Button>
+              </div>
             </div>
-          </div>
+          )}
+
+          {/* === FACIAL SCAN === */}
+          {studentUuid && (
+            <>
+              <div className="relative w-full aspect-square bg-muted rounded-lg overflow-hidden mb-6">
+                <video ref={videoRef} autoPlay playsInline muted className="w-full h-full object-cover" />
+                {!cameraReady && (
+                  <div className="absolute inset-0 flex items-center justify-center bg-black/50">
+                    <p className="text-white text-sm">Loading camera...</p>
+                  </div>
+                )}
+                {scanning && challenge && (
+                  <div className="absolute inset-0 bg-gradient-to-b from-transparent via-accent/20 to-transparent animate-scan-line" />
+                )}
+              </div>
+
+              <div className="space-y-4">
+                <div className="text-center">
+                  <p className="text-sm text-muted-foreground mb-1">
+                    ID: <span className="font-semibold text-foreground">{studentId}</span>
+                  </p>
+                  {sessionData?.unit?.name && (
+                    <p className="text-xs text-muted-foreground">Unit: {sessionData.unit.name}</p>
+                  )}
+                  {cameraReady && <p className="text-xs text-green-600">Camera ready</p>}
+                  <p className="text-lg font-semibold mt-2">{getChallengeText()}</p>
+                  <div className="w-full bg-muted rounded-full h-2 overflow-hidden">
+                    <div className="bg-accent h-full transition-all duration-200" style={{ width: `${progress}%` }} />
+                  </div>
+                </div>
+
+                <div className="flex gap-3">
+                  <Button variant="outline" onClick={handleResetStudent} className="flex-1">
+                    Change ID
+                  </Button>
+                  {!scanning ? (
+                    <Button
+                      onClick={startScan}
+                      disabled={!cameraReady}
+                      className="flex-1"
+                    >
+                      Start Scan
+                    </Button>
+                  ) : (
+                    <Button disabled className="flex-1">
+                      Scanning...
+                    </Button>
+                  )}
+                </div>
+              </div>
+            </>
+          )}
         </Card>
       </div>
     </div>

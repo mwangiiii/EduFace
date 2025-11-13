@@ -15,13 +15,21 @@ export default function StudentFlow({ onLogout }: StudentFlowProps) {
   const [step, setStep] = useState<StudentStep>("code-entry")
   const [sessionData, setSessionData] = useState<any>(null)
 
- const handleCodeSubmit = (sessionId: string, accessCode: string) => {
-  setSessionData({ sessionId, accessCode, timestamp: new Date() })
-  setStep("facial-scan")
-}
+  const handleCodeSubmit = (sessionData: any, accessCode: string) => {
+    // sessionData comes from CodeEntry, which includes all session info and unit
+    setSessionData(sessionData)
+    setStep("facial-scan")
+    // Store accessCode separately if needed
+    setAccessCode(accessCode)
+  }
 
   const handleScanComplete = (result: any) => {
-    setSessionData((prev) => ({ ...prev, ...result }))
+    // Merge facial scan result with session data
+    setSessionData((prev: any) => ({ 
+      ...prev, 
+      ...result,
+      verificationTimestamp: new Date()
+    }))
     setStep("confirmation")
   }
 
@@ -30,12 +38,32 @@ export default function StudentFlow({ onLogout }: StudentFlowProps) {
     setSessionData(null)
   }
 
+  const [accessCode, setAccessCode] = useState<string>("");
+
   return (
     <div className="min-h-screen bg-background">
-      {step === "code-entry" && <CodeEntry onSubmit={handleCodeSubmit} onLogout={onLogout} />}
-      {step === "facial-scan" && <FacialScan onComplete={handleScanComplete} onBack={() => setStep("code-entry")} />}
+      {step === "code-entry" && (
+        <CodeEntry 
+          onSubmit={handleCodeSubmit} 
+          onLogout={onLogout} 
+        />
+      )}
+      
+      {step === "facial-scan" && (
+        <FacialScan 
+          sessionData={sessionData}
+          accessCode={accessCode}
+          onComplete={handleScanComplete} 
+          onBack={() => setStep("code-entry")} 
+        />
+      )}
+      
       {step === "confirmation" && (
-        <AttendanceConfirmation data={sessionData} onReset={handleReset} onLogout={onLogout} />
+        <AttendanceConfirmation 
+          data={sessionData} 
+          onReset={handleReset} 
+          onLogout={onLogout} 
+        />
       )}
     </div>
   )

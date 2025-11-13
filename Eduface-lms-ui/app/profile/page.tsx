@@ -317,6 +317,7 @@ export default function ProfilePage() {
   }
 
   // FIXED: Responsive capture with lock, async offload, and UI feedback
+  // Updated to resize images for smaller payload to avoid request size limits
   const captureImage = async () => {
     if (!videoRef || !canvasRef || isCapturing) return;
 
@@ -326,7 +327,13 @@ export default function ProfilePage() {
       const ctx = canvasRef.getContext('2d');
       if (!ctx) return;
 
-      // Set canvas size
+      // Check if video dimensions are ready
+      if (videoRef.videoWidth === 0 || videoRef.videoHeight === 0) {
+        toast.warning('Video not ready. Please wait a moment.');
+        return;
+      }
+
+      // Set canvas size to video dimensions for quality check
       canvasRef.width = videoRef.videoWidth;
       canvasRef.height = videoRef.videoHeight;
       ctx.drawImage(videoRef, 0, 0);
@@ -347,6 +354,10 @@ export default function ProfilePage() {
         brightness += (r + g + b) / 3;
         sampleCount++;
       }
+      if (sampleCount === 0) {
+        toast.warning('Face not detected in frame. Center your face.');
+        return;
+      }
       brightness /= sampleCount;
 
       const isGoodQuality = brightness > 50 && brightness < 200;
@@ -356,23 +367,31 @@ export default function ProfilePage() {
         return;
       }
 
-      // Offload base64 conversion to avoid UI freeze
-      const base64Promise = new Promise<string>((resolve) => {
-        const img = new Image();
-        img.onload = () => {
-          const tempCanvas = document.createElement('canvas');
-          tempCanvas.width = img.width;
-          tempCanvas.height = img.height;
-          const tempCtx = tempCanvas.getContext('2d');
-          if (tempCtx) {
-            tempCtx.drawImage(img, 0, 0);
-            resolve(tempCanvas.toDataURL('image/jpeg', 0.8).split(',')[1]);
-          }
-        };
-        img.src = canvasRef.toDataURL('image/jpeg', 0.8);
-      });
+      // Create resized canvas for encoding to reduce payload size
+      const smallCanvas = document.createElement('canvas');
+      const maxDim = 320;
+      let { videoWidth, videoHeight } = videoRef;
+      if (videoWidth > videoHeight) {
+        smallCanvas.width = maxDim;
+        smallCanvas.height = (videoHeight / videoWidth) * maxDim;
+      } else {
+        smallCanvas.height = maxDim;
+        smallCanvas.width = (videoWidth / videoHeight) * maxDim;
+      }
+      const smallCtx = smallCanvas.getContext('2d');
+      if (!smallCtx) return;
 
-      const base64 = await base64Promise;
+      smallCtx.drawImage(videoRef, 0, 0, smallCanvas.width, smallCanvas.height);
+      const base64 = smallCanvas.toDataURL('image/jpeg', 0.7).split(',')[1];
+
+      // Validate base64
+      try {
+        atob(base64);
+      } catch (e) {
+        console.error('Invalid base64 generated:', base64.substring(0, 50));
+        toast.error('Failed to process image. Try again.');
+        return;
+      }
 
       const step = ENROLLMENT_STEPS[currentStep];
       const currentAngleCount = capturedImages.filter(img => img.angle === step.angle).length;
@@ -410,7 +429,7 @@ export default function ProfilePage() {
     }
   }
 
-  // Update only the handleSubmitEnrollment function in your profile page
+  // CORRECTED: Use direct fetch with manual URL construction to avoid supabase.functions.url issue
   const handleSubmitEnrollment = async () => {
     if (!profile.student?.student_id || capturedImages.length < 15) {
       toast.error('Incomplete enrollment. Need 15+ images.')
@@ -428,37 +447,47 @@ export default function ProfilePage() {
         return
       }
 
-      console.log('Calling Supabase function with:', {
+      console.log('Calling Edge Function with:', {
         student_id: profile.student.student_id,
         student_uuid: profile.student.id,
         imageCount: capturedImages.length
       })
 
-      // Call Supabase Edge Function with explicit Authorization header to ensure auth session is passed
-      const { data, error } = await supabase.functions.invoke('enroll-face', {
-        body: {
+      // Manual URL construction using NEXT_PUBLIC_SUPABASE_URL
+      const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL
+      if (!supabaseUrl) {
+        throw new Error('Supabase URL not configured')
+      }
+      const url = `${supabaseUrl}/functions/v1/enroll-face`
+
+      const response = await fetch(url, {
+        method: 'POST',
+        headers: {
+          'Authorization': `Bearer ${session.access_token}`,
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({
           student_id: profile.student.student_id,
           student_uuid: profile.student.id,
           images: capturedImages.map(img => ({ 
             base64: img.base64, 
             angle: img.angle 
           })),
-        },
-        headers: {
-          Authorization: `Bearer ${session.access_token}`,
-        },
+        }),
       })
 
-      if (error) {
-        console.error('Supabase function error:', error)
-        throw new Error(error.message || 'Enrollment failed')
+      if (!response.ok) {
+        const errorData = await response.json().catch(() => ({}))
+        console.error('HTTP error:', response.status, errorData)
+        throw new Error(errorData.message || `HTTP error! status: ${response.status}`)
       }
+
+      const data = await response.json()
+      console.log('Enrollment response:', data)
 
       if (!data.success) {
         throw new Error(data.error || 'Enrollment failed')
       }
-
-      console.log('Enrollment response:', data)
 
       // Update profile state
       setProfile(prev => ({
@@ -739,8 +768,8 @@ export default function ProfilePage() {
                   <p className="text-muted-foreground">{step.instruction}</p>
                   <p className="text-sm">Captured: {stepCaptured}/{step.targetImages}</p>
                   {stepCaptured < step.targetImages && (
-                    <Button onClick={captureImage} className="mt-2" disabled={!videoRef}>
-                      Capture Image
+                    <Button onClick={captureImage} className="mt-2" disabled={!videoRef || isCapturing}>
+                      {isCapturing ? 'Capturing...' : 'Capture Image'}
                     </Button>
                   )}
                 </div>
