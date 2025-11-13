@@ -241,7 +241,8 @@ const captureAndSendFrame = async () => {
   return (
     <div className="min-h-screen flex flex-col items-center justify-center p-4 bg-gradient-to-b from-primary/5 to-background">
       <div className="w-full max-w-md">
-        <div className="text-center mb-8">
+        <div className="text-center mb-
+        8">
           <h1 className="text-3xl font-bold text-foreground mb-2">Facial Recognition</h1>
           <p className="text-muted-foreground">
             {!studentUuid ? "Enter your Student ID" : "Position your face in the frame"}
