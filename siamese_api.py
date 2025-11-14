@@ -8,6 +8,8 @@ import gdown
 import sys
 import traceback
 import asyncio
+from concurrent.futures import ThreadPoolExecutor, TimeoutError
+import signal
 
 # Initialize FastAPI first
 app = FastAPI()
@@ -42,12 +44,19 @@ def load_siamese_model():
     
     try:
         print("📦 Importing TensorFlow and Keras...")
-        # Set memory growth to avoid OOM
+        
+        # Configure TensorFlow before importing
+        os.environ['TF_CPP_MIN_LOG_LEVEL'] = '2'  # Reduce TF logging
+        os.environ['TF_FORCE_GPU_ALLOW_GROWTH'] = 'true'
+        
         import tensorflow as tf
-        gpus = tf.config.list_physical_devices('GPU')
-        if gpus:
-            for gpu in gpus:
-                tf.config.experimental.set_memory_growth(gpu, True)
+        
+        # Disable GPU if causing issues
+        tf.config.set_visible_devices([], 'GPU')
+        
+        # Set thread limits to avoid hanging
+        tf.config.threading.set_inter_op_parallelism_threads(2)
+        tf.config.threading.set_intra_op_parallelism_threads(2)
         
         from keras.models import load_model
         from keras.layers import Layer
@@ -62,17 +71,24 @@ def load_siamese_model():
                 return tf.math.abs(input_embedding - validation_embedding)
         
         print(f"📂 Loading model from {MODEL_PATH}...")
-        print(f"📊 Model file size: {os.path.getsize(MODEL_PATH) / (1024*1024):.2f} MB")
+        file_size = os.path.getsize(MODEL_PATH) / (1024*1024)
+        print(f"📊 Model file size: {file_size:.2f} MB")
         
+        # Load with minimal options
+        print("⏳ This may take 30-60 seconds...")
         loaded_model = load_model(
             MODEL_PATH, 
             custom_objects={'L1Dist': L1Dist},
-            compile=False  # Skip compilation to speed up loading
+            compile=False
         )
         
         print("✅ Siamese model loaded successfully!")
-        print(f"📋 Model summary:")
-        loaded_model.summary()
+        
+        # Test the model
+        print("🧪 Testing model with dummy input...")
+        dummy_input = np.random.rand(1, 100, 100, 3).astype(np.float32)
+        test_pred = loaded_model.predict([dummy_input, dummy_input], verbose=0)
+        print(f"✅ Model test successful! Output shape: {test_pred.shape}")
         
         model = loaded_model
         model_loading = False
@@ -86,18 +102,36 @@ def load_siamese_model():
         raise
 
 async def load_model_async():
-    """Load model in background"""
-    global model_loading
+    """Load model in background with timeout"""
+    global model_loading, model_error
     model_loading = True
     
     try:
-        # Run the blocking load_model in a thread pool
+        print("🔄 Starting background model loading...")
+        
+        # Download first (should be fast since file exists)
         loop = asyncio.get_event_loop()
         await loop.run_in_executor(None, download_model)
-        await loop.run_in_executor(None, load_siamese_model)
-        print("🎉 Model loaded successfully in background!")
+        
+        # Load model with timeout
+        print("⏰ Loading model (timeout: 120 seconds)...")
+        executor = ThreadPoolExecutor(max_workers=1)
+        future = loop.run_in_executor(executor, load_siamese_model)
+        
+        try:
+            await asyncio.wait_for(future, timeout=120.0)
+            print("🎉 Model loaded successfully in background!")
+        except asyncio.TimeoutError:
+            model_error = "Model loading timed out after 120 seconds"
+            model_loading = False
+            print(f"⏰ {model_error}")
+            executor.shutdown(wait=False)
+            
     except Exception as e:
+        model_error = str(e)
+        model_loading = False
         print(f"💥 Background model loading failed: {e}")
+        print(traceback.format_exc())
 
 # ================================
 # 2. STARTUP EVENT
@@ -108,6 +142,7 @@ async def startup_event():
     print("🚀 Application starting...")
     print(f"Python version: {sys.version}")
     print(f"Working directory: {os.getcwd()}")
+    print(f"Available memory: Check container limits")
     
     # Start loading model in background - don't block startup
     asyncio.create_task(load_model_async())
