@@ -1,19 +1,9 @@
-# cat > .dockerignore << 'EOF'
 __pycache__
 *.pyc
-*.pyo
-*.pyd
-.Python
-env/
-venv/
-.venv
-*.egg-info/
-dist/
-build/
 .git
-.gitignore
-README.md
-.DS_Store
 *.log
 .env
-EOF
+.venv
+venv
+*.h5
+!siamese_model.h5
