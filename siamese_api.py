@@ -1,4 +1,4 @@
-from fastapi import FastAPI, UploadFile, File, HTTPException
+from fastapi import FastAPI, UploadFile, File, HTTPException, BackgroundTasks
 from fastapi.responses import JSONResponse
 import numpy as np
 from PIL import Image
@@ -7,12 +7,15 @@ import os
 import gdown
 import sys
 import traceback
+import asyncio
 
 # Initialize FastAPI first
 app = FastAPI()
 
 # Global variable to hold the model
 model = None
+model_loading = False
+model_error = None
 
 # ================================
 # 1. MODEL DOWNLOAD & LOAD
@@ -29,64 +32,87 @@ def download_model():
             print("✅ Model downloaded successfully!")
         except Exception as e:
             print(f"❌ Failed to download model: {e}")
-            print(traceback.format_exc())
             raise RuntimeError(f"Model download failed: {e}")
     else:
         print(f"✅ Model already exists at {MODEL_PATH}")
 
 def load_siamese_model():
     """Load the model with custom objects"""
-    print("📦 Importing TensorFlow and Keras...")
+    global model, model_loading, model_error
+    
     try:
-        from keras.models import load_model
+        print("📦 Importing TensorFlow and Keras...")
+        # Set memory growth to avoid OOM
         import tensorflow as tf
+        gpus = tf.config.list_physical_devices('GPU')
+        if gpus:
+            for gpu in gpus:
+                tf.config.experimental.set_memory_growth(gpu, True)
+        
+        from keras.models import load_model
         from keras.layers import Layer
         print("✅ TensorFlow imported successfully")
-    except Exception as e:
-        print(f"❌ Failed to import TensorFlow: {e}")
-        print(traceback.format_exc())
-        raise
-    
-    print("🔧 Defining custom L1Dist layer...")
-    class L1Dist(Layer):
-        def __init__(self, **kwargs):
-            super().__init__(**kwargs)
         
-        def call(self, input_embedding, validation_embedding):
-            return tf.math.abs(input_embedding - validation_embedding)
-    
-    try:
+        print("🔧 Defining custom L1Dist layer...")
+        class L1Dist(Layer):
+            def __init__(self, **kwargs):
+                super().__init__(**kwargs)
+            
+            def call(self, input_embedding, validation_embedding):
+                return tf.math.abs(input_embedding - validation_embedding)
+        
         print(f"📂 Loading model from {MODEL_PATH}...")
-        loaded_model = load_model(MODEL_PATH, custom_objects={'L1Dist': L1Dist})
+        print(f"📊 Model file size: {os.path.getsize(MODEL_PATH) / (1024*1024):.2f} MB")
+        
+        loaded_model = load_model(
+            MODEL_PATH, 
+            custom_objects={'L1Dist': L1Dist},
+            compile=False  # Skip compilation to speed up loading
+        )
+        
         print("✅ Siamese model loaded successfully!")
+        print(f"📋 Model summary:")
+        loaded_model.summary()
+        
+        model = loaded_model
+        model_loading = False
         return loaded_model
+        
     except Exception as e:
+        model_error = str(e)
+        model_loading = False
         print(f"❌ Failed to load model: {e}")
         print(traceback.format_exc())
-        raise RuntimeError(f"Model loading failed: {e}")
+        raise
+
+async def load_model_async():
+    """Load model in background"""
+    global model_loading
+    model_loading = True
+    
+    try:
+        # Run the blocking load_model in a thread pool
+        loop = asyncio.get_event_loop()
+        await loop.run_in_executor(None, download_model)
+        await loop.run_in_executor(None, load_siamese_model)
+        print("🎉 Model loaded successfully in background!")
+    except Exception as e:
+        print(f"💥 Background model loading failed: {e}")
 
 # ================================
 # 2. STARTUP EVENT
 # ================================
 @app.on_event("startup")
 async def startup_event():
-    """Download and load model on startup"""
-    global model
-    try:
-        print("🚀 Starting up application...")
-        print(f"Python version: {sys.version}")
-        print(f"Working directory: {os.getcwd()}")
-        
-        download_model()
-        model = load_siamese_model()
-        
-        print("🎉 Application ready!")
-        print(f"Model type: {type(model)}")
-    except Exception as e:
-        print(f"💥 FATAL ERROR during startup: {e}")
-        print(traceback.format_exc())
-        # Don't raise - let the app start anyway so we can see error in health endpoint
-        print("⚠️  Application started but model failed to load")
+    """Start model loading in background"""
+    print("🚀 Application starting...")
+    print(f"Python version: {sys.version}")
+    print(f"Working directory: {os.getcwd()}")
+    
+    # Start loading model in background - don't block startup
+    asyncio.create_task(load_model_async())
+    
+    print("✅ Application started! Model loading in background...")
 
 # ================================
 # 3. IMAGE PREPROCESSING
@@ -112,20 +138,27 @@ def preprocess_image(image_bytes):
 @app.get("/")
 def root():
     """Health check endpoint"""
+    status = "ready" if model is not None else "loading" if model_loading else "error"
+    
     return {
-        "status": "ok", 
-        "message": "Siamese Network API is running",
-        "model_loaded": model is not None
+        "status": status,
+        "message": "Siamese Network API",
+        "model_loaded": model is not None,
+        "model_loading": model_loading,
+        "error": model_error
     }
 
 @app.get("/health")
 def health():
     """Detailed health check"""
     return {
-        "status": "healthy" if model is not None else "error",
+        "status": "healthy" if model is not None else "loading" if model_loading else "error",
         "model_loaded": model is not None,
+        "model_loading": model_loading,
         "model_path": MODEL_PATH,
-        "model_exists": os.path.exists(MODEL_PATH)
+        "model_exists": os.path.exists(MODEL_PATH),
+        "model_size_mb": f"{os.path.getsize(MODEL_PATH) / (1024*1024):.2f}" if os.path.exists(MODEL_PATH) else None,
+        "error": model_error
     }
 
 @app.post("/predict")
@@ -141,11 +174,15 @@ async def predict(file1: UploadFile = File(...), file2: UploadFile = File(...)):
         JSON with similarity score (0-1, where 1 means identical)
     """
     # Check if model is loaded
-    if model is None:
+    if model_loading:
         raise HTTPException(
             status_code=503, 
-            detail="Model not loaded. Check /health endpoint for details."
+            detail="Model is still loading. Please wait and try again in a few moments."
         )
+    
+    if model is None:
+        error_msg = f"Model failed to load. Error: {model_error}" if model_error else "Model not loaded"
+        raise HTTPException(status_code=503, detail=error_msg)
     
     try:
         # Read image bytes
@@ -166,20 +203,4 @@ async def predict(file1: UploadFile = File(...), file2: UploadFile = File(...)):
         
         # Determine if images are similar (threshold can be adjusted)
         threshold = 0.5
-        is_similar = similarity >= threshold
-        
-        return JSONResponse({
-            "similarity_score": similarity,
-            "is_similar": is_similar,
-            "threshold": threshold
-        })
-    
-    except ValueError as e:
-        raise HTTPException(status_code=400, detail=str(e))
-    except Exception as e:
-        print(f"Error during prediction: {e}")
-        print(traceback.format_exc())
-        raise HTTPException(status_code=500, detail=f"Prediction failed: {str(e)}")
-
-# To run locally:
-# uvicorn siamese_api:app --host 0.0.0.0 --port 8000 --timeout-keep-alive 75
+        is_similar = s
