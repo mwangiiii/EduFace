@@ -12,7 +12,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
 
-# Copy application code
+# Copy application code - using your actual filename
 COPY siamese_api.py .
 
 # OPTIONAL: Pre-download model during build (saves 1-2 minutes on startup)
@@ -30,4 +30,5 @@ ENV TF_CPP_MIN_LOG_LEVEL=2
 ENV TF_FORCE_GPU_ALLOW_GROWTH=true
 ENV PYTHONUNBUFFERED=1
 
-CMD ["uvicorn", "main:app", "--host", "0.0.0.0", "--port", "8080", "--timeout-keep-alive", "300"]
+# IMPORTANT: Use siamese_api:app since your file is siamese_api.py
+CMD ["uvicorn", "siamese_api:app", "--host", "0.0.0.0", "--port", "8080", "--timeout-keep-alive", "300"]

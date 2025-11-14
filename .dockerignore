@@ -1,3 +1,4 @@
+# cat > .dockerignore << 'EOF'
 __pycache__
 *.pyc
 *.pyo
@@ -15,4 +16,4 @@ README.md
 .DS_Store
 *.log
 .env
-siamese_api.py
+EOF
