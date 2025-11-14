@@ -1,58 +1,72 @@
 from fastapi import FastAPI, UploadFile, File, HTTPException
 from fastapi.responses import JSONResponse
-from keras.models import load_model
-import tensorflow as tf
-from keras.layers import Layer
 import numpy as np
 from PIL import Image
 import io
 import os
 import gdown
 
+# Initialize FastAPI first
 app = FastAPI()
 
+# Global variable to hold the model
+model = None
+
 # ================================
-# 1. MODEL DOWNLOAD SECTION
+# 1. MODEL DOWNLOAD & LOAD
 # ================================
 MODEL_PATH = "siamese_model.h5"
 MODEL_URL = "https://drive.google.com/uc?id=1BxfoPP9UPx5okXed-hw6-cei812A6jLW"
 
-# Only download if model doesn't exist
-if not os.path.exists(MODEL_PATH):
-    try:
-        print("🔽 Downloading model from Google Drive...")
-        gdown.download(MODEL_URL, MODEL_PATH, quiet=False)
-        print("✅ Model downloaded successfully!")
-    except Exception as e:
-        print(f"❌ Failed to download model: {e}")
-        print(f"Please download manually from: {MODEL_URL}")
-        print(f"And place it at: {MODEL_PATH}")
-        raise RuntimeError(f"Model download failed: {e}")
-else:
-    print(f"✅ Model already exists at {MODEL_PATH}")
+def download_model():
+    """Download model if it doesn't exist"""
+    if not os.path.exists(MODEL_PATH):
+        try:
+            print("🔽 Downloading model from Google Drive...")
+            gdown.download(MODEL_URL, MODEL_PATH, quiet=False)
+            print("✅ Model downloaded successfully!")
+        except Exception as e:
+            print(f"❌ Failed to download model: {e}")
+            raise RuntimeError(f"Model download failed: {e}")
+    else:
+        print(f"✅ Model already exists at {MODEL_PATH}")
 
-# ================================
-# 2. CUSTOM LAYER DEFINITION
-# ================================
-class L1Dist(Layer):
-    def __init__(self, **kwargs):
-        super().__init__(**kwargs)
+def load_siamese_model():
+    """Load the model with custom objects"""
+    # Import here to avoid loading TensorFlow at module level
+    from keras.models import load_model
+    import tensorflow as tf
+    from keras.layers import Layer
     
-    def call(self, input_embedding, validation_embedding):
-        return tf.math.abs(input_embedding - validation_embedding)
+    class L1Dist(Layer):
+        def __init__(self, **kwargs):
+            super().__init__(**kwargs)
+        
+        def call(self, input_embedding, validation_embedding):
+            return tf.math.abs(input_embedding - validation_embedding)
+    
+    try:
+        loaded_model = load_model(MODEL_PATH, custom_objects={'L1Dist': L1Dist})
+        print("✅ Siamese model loaded successfully!")
+        return loaded_model
+    except Exception as e:
+        print(f"❌ Failed to load model: {e}")
+        raise RuntimeError(f"Model loading failed: {e}")
 
 # ================================
-# 3. LOAD MODEL
+# 2. STARTUP EVENT
 # ================================
-try:
-    model = load_model(MODEL_PATH, custom_objects={'L1Dist': L1Dist})
-    print("✅ Siamese model loaded successfully!")
-except Exception as e:
-    print(f"❌ Failed to load model: {e}")
-    raise RuntimeError(f"Model loading failed: {e}")
+@app.on_event("startup")
+async def startup_event():
+    """Download and load model on startup"""
+    global model
+    print("🚀 Starting up application...")
+    download_model()
+    model = load_siamese_model()
+    print("🎉 Application ready!")
 
 # ================================
-# 4. IMAGE PREPROCESSING
+# 3. IMAGE PREPROCESSING
 # ================================
 def preprocess_image(image_bytes):
     """
@@ -70,18 +84,22 @@ def preprocess_image(image_bytes):
         raise ValueError(f"Image preprocessing failed: {e}")
 
 # ================================
-# 5. API ENDPOINTS
+# 4. API ENDPOINTS
 # ================================
 @app.get("/")
 def root():
     """Health check endpoint"""
-    return {"status": "ok", "message": "Siamese Network API is running"}
+    return {
+        "status": "ok", 
+        "message": "Siamese Network API is running",
+        "model_loaded": model is not None
+    }
 
 @app.get("/health")
 def health():
     """Detailed health check"""
     return {
-        "status": "healthy",
+        "status": "healthy" if model is not None else "loading",
         "model_loaded": model is not None,
         "model_path": MODEL_PATH
     }
@@ -98,6 +116,10 @@ async def predict(file1: UploadFile = File(...), file2: UploadFile = File(...)):
     Returns:
         JSON with similarity score (0-1, where 1 means identical)
     """
+    # Check if model is loaded
+    if model is None:
+        raise HTTPException(status_code=503, detail="Model not loaded yet. Please wait.")
+    
     try:
         # Read image bytes
         image1_bytes = await file1.read()
