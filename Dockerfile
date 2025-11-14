@@ -13,7 +13,7 @@ COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
 
 # Copy application code
-COPY main.py .
+COPY siamese_api.py .
 
 # OPTIONAL: Pre-download model during build (saves 1-2 minutes on startup)
 # Uncomment the line below to download model at build time
