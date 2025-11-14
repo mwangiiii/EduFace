@@ -5,6 +5,8 @@ from PIL import Image
 import io
 import os
 import gdown
+import sys
+import traceback
 
 # Initialize FastAPI first
 app = FastAPI()
@@ -27,17 +29,25 @@ def download_model():
             print("✅ Model downloaded successfully!")
         except Exception as e:
             print(f"❌ Failed to download model: {e}")
+            print(traceback.format_exc())
             raise RuntimeError(f"Model download failed: {e}")
     else:
         print(f"✅ Model already exists at {MODEL_PATH}")
 
 def load_siamese_model():
     """Load the model with custom objects"""
-    # Import here to avoid loading TensorFlow at module level
-    from keras.models import load_model
-    import tensorflow as tf
-    from keras.layers import Layer
+    print("📦 Importing TensorFlow and Keras...")
+    try:
+        from keras.models import load_model
+        import tensorflow as tf
+        from keras.layers import Layer
+        print("✅ TensorFlow imported successfully")
+    except Exception as e:
+        print(f"❌ Failed to import TensorFlow: {e}")
+        print(traceback.format_exc())
+        raise
     
+    print("🔧 Defining custom L1Dist layer...")
     class L1Dist(Layer):
         def __init__(self, **kwargs):
             super().__init__(**kwargs)
@@ -46,11 +56,13 @@ def load_siamese_model():
             return tf.math.abs(input_embedding - validation_embedding)
     
     try:
+        print(f"📂 Loading model from {MODEL_PATH}...")
         loaded_model = load_model(MODEL_PATH, custom_objects={'L1Dist': L1Dist})
         print("✅ Siamese model loaded successfully!")
         return loaded_model
     except Exception as e:
         print(f"❌ Failed to load model: {e}")
+        print(traceback.format_exc())
         raise RuntimeError(f"Model loading failed: {e}")
 
 # ================================
@@ -60,10 +72,21 @@ def load_siamese_model():
 async def startup_event():
     """Download and load model on startup"""
     global model
-    print("🚀 Starting up application...")
-    download_model()
-    model = load_siamese_model()
-    print("🎉 Application ready!")
+    try:
+        print("🚀 Starting up application...")
+        print(f"Python version: {sys.version}")
+        print(f"Working directory: {os.getcwd()}")
+        
+        download_model()
+        model = load_siamese_model()
+        
+        print("🎉 Application ready!")
+        print(f"Model type: {type(model)}")
+    except Exception as e:
+        print(f"💥 FATAL ERROR during startup: {e}")
+        print(traceback.format_exc())
+        # Don't raise - let the app start anyway so we can see error in health endpoint
+        print("⚠️  Application started but model failed to load")
 
 # ================================
 # 3. IMAGE PREPROCESSING
@@ -99,9 +122,10 @@ def root():
 def health():
     """Detailed health check"""
     return {
-        "status": "healthy" if model is not None else "loading",
+        "status": "healthy" if model is not None else "error",
         "model_loaded": model is not None,
-        "model_path": MODEL_PATH
+        "model_path": MODEL_PATH,
+        "model_exists": os.path.exists(MODEL_PATH)
     }
 
 @app.post("/predict")
@@ -118,7 +142,10 @@ async def predict(file1: UploadFile = File(...), file2: UploadFile = File(...)):
     """
     # Check if model is loaded
     if model is None:
-        raise HTTPException(status_code=503, detail="Model not loaded yet. Please wait.")
+        raise HTTPException(
+            status_code=503, 
+            detail="Model not loaded. Check /health endpoint for details."
+        )
     
     try:
         # Read image bytes
@@ -150,7 +177,9 @@ async def predict(file1: UploadFile = File(...), file2: UploadFile = File(...)):
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))
     except Exception as e:
+        print(f"Error during prediction: {e}")
+        print(traceback.format_exc())
         raise HTTPException(status_code=500, detail=f"Prediction failed: {str(e)}")
 
 # To run locally:
-# uvicorn siamese_api:app --reload --host 0.0.0.0 --port 8000
+# uvicorn siamese_api:app --host 0.0.0.0 --port 8000 --timeout-keep-alive 75
