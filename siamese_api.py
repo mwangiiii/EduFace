@@ -1,4 +1,4 @@
-from fastapi import FastAPI, UploadFile, File, HTTPException, BackgroundTasks
+from fastapi import FastAPI, UploadFile, File, HTTPException
 from fastapi.responses import JSONResponse
 import numpy as np
 from PIL import Image
@@ -203,4 +203,17 @@ async def predict(file1: UploadFile = File(...), file2: UploadFile = File(...)):
         
         # Determine if images are similar (threshold can be adjusted)
         threshold = 0.5
-        is_similar = s
+        is_similar = similarity >= threshold
+        
+        return JSONResponse({
+            "similarity_score": similarity,
+            "is_similar": is_similar,
+            "threshold": threshold
+        })
+    
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    except Exception as e:
+        print(f"Error during prediction: {e}")
+        print(traceback.format_exc())
+        raise HTTPException(status_code=500, detail=f"Prediction failed: {str(e)}")
