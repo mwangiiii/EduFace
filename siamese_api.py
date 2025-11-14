@@ -7,16 +7,9 @@ import os
 import gdown
 import sys
 import traceback
-import asyncio
-from concurrent.futures import ThreadPoolExecutor, TimeoutError
-import signal
-
-# Initialize FastAPI first
-app = FastAPI()
 
 # Global variable to hold the model
 model = None
-model_loading = False
 model_error = None
 
 # ================================
@@ -40,13 +33,13 @@ def download_model():
 
 def load_siamese_model():
     """Load the model with custom objects"""
-    global model, model_loading, model_error
+    global model, model_error
     
     try:
         print("📦 Importing TensorFlow and Keras...")
         
         # Configure TensorFlow before importing
-        os.environ['TF_CPP_MIN_LOG_LEVEL'] = '2'  # Reduce TF logging
+        os.environ['TF_CPP_MIN_LOG_LEVEL'] = '2'
         os.environ['TF_FORCE_GPU_ALLOW_GROWTH'] = 'true'
         
         import tensorflow as tf
@@ -54,7 +47,7 @@ def load_siamese_model():
         # Disable GPU if causing issues
         tf.config.set_visible_devices([], 'GPU')
         
-        # Set thread limits to avoid hanging
+        # Set thread limits
         tf.config.threading.set_inter_op_parallelism_threads(2)
         tf.config.threading.set_intra_op_parallelism_threads(2)
         
@@ -74,8 +67,7 @@ def load_siamese_model():
         file_size = os.path.getsize(MODEL_PATH) / (1024*1024)
         print(f"📊 Model file size: {file_size:.2f} MB")
         
-        # Load with minimal options
-        print("⏳ This may take 30-60 seconds...")
+        print("⏳ Loading model (this may take 30-60 seconds)...")
         loaded_model = load_model(
             MODEL_PATH, 
             custom_objects={'L1Dist': L1Dist},
@@ -91,63 +83,32 @@ def load_siamese_model():
         print(f"✅ Model test successful! Output shape: {test_pred.shape}")
         
         model = loaded_model
-        model_loading = False
         return loaded_model
         
     except Exception as e:
         model_error = str(e)
-        model_loading = False
         print(f"❌ Failed to load model: {e}")
         print(traceback.format_exc())
         raise
 
-async def load_model_async():
-    """Load model in background with timeout"""
-    global model_loading, model_error
-    model_loading = True
-    
-    try:
-        print("🔄 Starting background model loading...")
-        
-        # Download first (should be fast since file exists)
-        loop = asyncio.get_event_loop()
-        await loop.run_in_executor(None, download_model)
-        
-        # Load model with timeout
-        print("⏰ Loading model (timeout: 120 seconds)...")
-        executor = ThreadPoolExecutor(max_workers=1)
-        future = loop.run_in_executor(executor, load_siamese_model)
-        
-        try:
-            await asyncio.wait_for(future, timeout=120.0)
-            print("🎉 Model loaded successfully in background!")
-        except asyncio.TimeoutError:
-            model_error = "Model loading timed out after 120 seconds"
-            model_loading = False
-            print(f"⏰ {model_error}")
-            executor.shutdown(wait=False)
-            
-    except Exception as e:
-        model_error = str(e)
-        model_loading = False
-        print(f"💥 Background model loading failed: {e}")
-        print(traceback.format_exc())
+# ================================
+# 2. LOAD MODEL BEFORE APP STARTS
+# ================================
+print("🚀 Starting application initialization...")
+print(f"Python version: {sys.version}")
+print(f"Working directory: {os.getcwd()}")
 
-# ================================
-# 2. STARTUP EVENT
-# ================================
-@app.on_event("startup")
-async def startup_event():
-    """Start model loading in background"""
-    print("🚀 Application starting...")
-    print(f"Python version: {sys.version}")
-    print(f"Working directory: {os.getcwd()}")
-    print(f"Available memory: Check container limits")
-    
-    # Start loading model in background - don't block startup
-    asyncio.create_task(load_model_async())
-    
-    print("✅ Application started! Model loading in background...")
+# Download and load model synchronously
+try:
+    download_model()
+    load_siamese_model()
+    print("🎉 Model ready! Starting FastAPI server...")
+except Exception as e:
+    print(f"💥 CRITICAL: Failed to initialize model: {e}")
+    print("⚠️  Server will start but predictions will fail!")
+
+# Initialize FastAPI AFTER model is loaded
+app = FastAPI()
 
 # ================================
 # 3. IMAGE PREPROCESSING
@@ -173,13 +134,10 @@ def preprocess_image(image_bytes):
 @app.get("/")
 def root():
     """Health check endpoint"""
-    status = "ready" if model is not None else "loading" if model_loading else "error"
-    
     return {
-        "status": status,
+        "status": "ready" if model is not None else "error",
         "message": "Siamese Network API",
         "model_loaded": model is not None,
-        "model_loading": model_loading,
         "error": model_error
     }
 
@@ -187,9 +145,8 @@ def root():
 def health():
     """Detailed health check"""
     return {
-        "status": "healthy" if model is not None else "loading" if model_loading else "error",
+        "status": "healthy" if model is not None else "error",
         "model_loaded": model is not None,
-        "model_loading": model_loading,
         "model_path": MODEL_PATH,
         "model_exists": os.path.exists(MODEL_PATH),
         "model_size_mb": f"{os.path.getsize(MODEL_PATH) / (1024*1024):.2f}" if os.path.exists(MODEL_PATH) else None,
@@ -208,15 +165,8 @@ async def predict(file1: UploadFile = File(...), file2: UploadFile = File(...)):
     Returns:
         JSON with similarity score (0-1, where 1 means identical)
     """
-    # Check if model is loaded
-    if model_loading:
-        raise HTTPException(
-            status_code=503, 
-            detail="Model is still loading. Please wait and try again in a few moments."
-        )
-    
     if model is None:
-        error_msg = f"Model failed to load. Error: {model_error}" if model_error else "Model not loaded"
+        error_msg = f"Model not loaded. Error: {model_error}" if model_error else "Model not loaded"
         raise HTTPException(status_code=503, detail=error_msg)
     
     try:
