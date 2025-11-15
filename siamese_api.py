@@ -25,7 +25,7 @@ load_start_time = None
 # 1. MODEL DOWNLOAD & LOAD
 # ================================
 MODEL_PATH = "siamese_model.h5"
-MODEL_URL = os.getenv("MODEL_URL", "https://github.com/mwangiiii/EduFace/releases/download/v1.0.0-model/siamese_model.h5")
+MODEL_URL = os.getenv("MODEL_URL", "https://github.com/mwangiiii/EduFace/releases/download/v0.2.0-alpha/siamese_model.h5")
 
 def download_model():
     """Download model from GitHub release or other URL"""
