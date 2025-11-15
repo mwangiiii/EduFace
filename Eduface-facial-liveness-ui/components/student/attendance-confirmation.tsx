@@ -2,128 +2,131 @@
 
 import { Button } from "@/components/ui/button"
 import { Card } from "@/components/ui/card"
-import { CheckCircle2 } from "lucide-react"
+import { CheckCircle2, Calendar, Clock, School, User } from "lucide-react"
 
 interface AttendanceConfirmationProps {
   data: {
     studentId: string
-    studentUuid: string
-    sessionId: string
-    sessionUuid: string
-    unitId: string
     unitName: string
-    confidence: number
-    avgConfidence: number
-    matchCount: number
-    totalComparisons: number
-    livenessScore: number
+    sessionId: string
     timestamp: Date
-    verificationTimestamp?: string
   }
   onReset: () => void
   onLogout: () => void
 }
 
 export default function AttendanceConfirmation({ data, onReset, onLogout }: AttendanceConfirmationProps) {
-  // Format timestamp
-  const time = data.timestamp ? new Date(data.timestamp).toLocaleTimeString("en-KE", {
-    hour: "2-digit",
+  const time = data.timestamp.toLocaleTimeString("en-KE", {
+    hour: "numeric",
     minute: "2-digit",
-    second: "2-digit",
     hour12: true
-  }) : "N/A"
+  })
 
-  const date = data.timestamp ? new Date(data.timestamp).toLocaleDateString("en-KE", {
+  const date = data.timestamp.toLocaleDateString("en-KE", {
     weekday: "long",
-    year: "numeric",
+    day: "numeric",
     month: "long",
-    day: "numeric"
-  }) : "N/A"
-
-  const confidencePercent = Math.round((data.confidence || 0) * 100)
+    year: "numeric"
+  })
 
   return (
-    <div className="min-h-screen flex flex-col items-center justify-center p-4 bg-gradient-to-b from-green-50 to-background dark:from-green-950/20">
-      <div className="w-full max-w-md">
-        <div className="text-center mb-8">
-          <div className="w-16 h-16 bg-green-500 rounded-full flex items-center justify-center mx-auto mb-4 animate-pulse">
-            <CheckCircle2 className="w-8 h-8 text-white" />
+    <div className="min-h-screen flex flex-col items-center justify-center p-6 bg-gradient-to-br from-green-50 via-white to-blue-50 dark:from-gray-900 dark:via-gray-800 dark:to-gray-900">
+      <div className="w-full max-w-md space-y-8">
+
+        {/* Success Icon */}
+        <div className="flex justify-center">
+          <div className="relative">
+            <div className="absolute inset-0 bg-green-400 rounded-full blur-xl opacity-30 animate-ping"></div>
+            <div className="relative w-20 h-20 bg-green-500 rounded-full flex items-center justify-center shadow-lg">
+              <CheckCircle2 className="w-12 h-12 text-white" />
+            </div>
           </div>
-          <h1 className="text-3xl font-bold text-foreground mb-2">Present!</h1>
-          <p className="text-muted-foreground">Your attendance has been recorded</p>
         </div>
 
-        <Card className="p-6 border border-border mb-6 shadow-sm">
-          <div className="space-y-4">
-            {/* Student ID */}
-            <div className="flex justify-between items-center pb-3 border-b border-border/50">
-              <span className="text-sm text-muted-foreground">Student ID</span>
-              <span className="font-mono font-semibold text-foreground">{data.studentId}</span>
-            </div>
-
-            {/* Unit Name */}
-            <div className="flex justify-between items-center pb-3 border-b border-border/50">
-              <span className="text-sm text-muted-foreground">Unit</span>
-              <span className="font-medium text-foreground">{data.unitName}</span>
-            </div>
-
-            {/* Session Code */}
-            <div className="flex justify-between items-center pb-3 border-b border-border/50">
-              <span className="text-sm text-muted-foreground">Session</span>
-              <span className="font-mono text-sm text-foreground">{data.sessionId}</span>
-            </div>
-
-            {/* Date & Time */}
-            <div className="flex justify-between items-center pb-3 border-b border-border/50">
-              <span className="text-sm text-muted-foreground">Time</span>
-              <div className="text-right">
-                <div className="font-medium text-foreground">{time}</div>
-                <div className="text-xs text-muted-foreground">{date}</div>
-              </div>
-            </div>
-
-            {/* Confidence */}
-            <div className="flex justify-between items-center">
-              <span className="text-sm text-muted-foreground">Face Match</span>
-              <span className={`font-bold text-lg ${confidencePercent >= 80 ? "text-green-600" : "text-yellow-600"}`}>
-                {confidencePercent}%
-              </span>
-            </div>
-
-            {/* Progress Bar */}
-            <div className="mt-2">
-              <div className="w-full bg-gray-200 dark:bg-gray-700 rounded-full h-2 overflow-hidden">
-                <div 
-                  className={`h-full transition-all duration-500 ${confidencePercent >= 80 ? "bg-green-500" : "bg-yellow-500"}`}
-                  style={{ width: `${confidencePercent}%` }}
-                />
-              </div>
-            </div>
-          </div>
-        </Card>
-
-        {/* Swahili Success Message */}
-        <div className="text-center mb-6">
-          <p className="text-lg font-semibold text-green-700 dark:text-green-400">
-            Umeandikishwa mahudhurio!
+        {/* Title */}
+        <div className="text-center space-y-2">
+          <h1 className="text-3xl md:text-4xl font-bold text-gray-900 dark:text-white">
+            Present!
+          </h1>
+          <p className="text-lg text-gray-600 dark:text-gray-300">
+            Umeandikishwa mahudhurio
           </p>
         </div>
 
+        {/* Confirmation Card */}
+        <Card className="p-6 bg-white/80 dark:bg-gray-800/80 backdrop-blur border border-green-200 dark:border-green-800 shadow-xl">
+          <div className="space-y-5">
+
+            {/* Student */}
+            <div className="flex items-center gap-3">
+              <div className="w-10 h-10 bg-blue-100 dark:bg-blue-900 rounded-full flex items-center justify-center">
+                <User className="w-5 h-5 text-blue-600 dark:text-blue-300" />
+              </div>
+              <div>
+                <p className="text-sm text-gray-500 dark:text-gray-400">Student ID</p>
+                <p className="font-mono font-bold text-lg text-gray-900 dark:text-white">{data.studentId}</p>
+              </div>
+            </div>
+
+            {/* Unit */}
+            <div className="flex items-center gap-3">
+              <div className="w-10 h-10 bg-purple-100 dark:bg-purple-900 rounded-full flex items-center justify-center">
+                <School className="w-5 h-5 text-purple-600 dark:text-purple-300" />
+              </div>
+              <div>
+                <p className="text-sm text-gray-500 dark:text-gray-400">Unit</p>
+                <p className="font-semibold text-gray-900 dark:text-white">{data.unitName}</p>
+              </div>
+            </div>
+
+            {/* Session */}
+            <div className="flex items-center gap-3">
+              <div className="w-10 h-10 bg-amber-100 dark:bg-amber-900 rounded-full flex items-center justify-center">
+                <Calendar className="w-5 h-5 text-amber-600 dark:text-amber-300" />
+              </div>
+              <div>
+                <p className="text-sm text-gray-500 dark:text-gray-400">Session Code</p>
+                <p className="font-mono text-gray-900 dark:text-white">{data.sessionId}</p>
+              </div>
+            </div>
+
+            {/* Time */}
+            <div className="flex items-center gap-3">
+              <div className="w-10 h-10 bg-green-100 dark:bg-green-900 rounded-full flex items-center justify-center">
+                <Clock className="w-5 h-5 text-green-600 dark:text-green-300" />
+              </div>
+              <div>
+                <p className="text-sm text-gray-500 dark:text-gray-400">Marked At</p>
+                <p className="font-medium text-gray-900 dark:text-white">{time}</p>
+                <p className="text-xs text-gray-500 dark:text-gray-400">{date}</p>
+              </div>
+            </div>
+
+          </div>
+        </Card>
+
+        {/* Action Buttons */}
         <div className="space-y-3">
           <Button 
             onClick={onReset} 
-            className="w-full bg-primary hover:bg-primary/90 text-primary-foreground"
+            className="w-full h-12 text-lg font-medium bg-gradient-to-r from-green-500 to-emerald-600 hover:from-green-600 hover:to-emerald-700 text-white shadow-md"
           >
             Mark Another Attendance
           </Button>
           <Button 
             onClick={onLogout} 
             variant="outline" 
-            className="w-full"
+            className="w-full h-12 text-lg font-medium border-2"
           >
             Back to Home
           </Button>
         </div>
+
+        {/* Footer */}
+        <p className="text-center text-xs text-gray-500 dark:text-gray-400 mt-8">
+          © 2025 EduFace • Secure & Private • Kenya
+        </p>
+
       </div>
     </div>
   )
