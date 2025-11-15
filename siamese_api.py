@@ -4,7 +4,7 @@ import numpy as np
 from PIL import Image
 import io
 import os
-import gdown
+
 import sys
 import traceback
 import asyncio
@@ -26,20 +26,9 @@ load_start_time = None
 # 1. MODEL DOWNLOAD & LOAD
 # ================================
 MODEL_PATH = "siamese_model.h5"
-MODEL_URL = "https://drive.google.com/uc?id=1BxfoPP9UPx5okXed-hw6-cei812A6jLW"
 
-def download_model():
-    """Download model if it doesn't exist"""
-    if not os.path.exists(MODEL_PATH):
-        try:
-            print("🔽 Downloading model from Google Drive...")
-            gdown.download(MODEL_URL, MODEL_PATH, quiet=False)
-            print("✅ Model downloaded successfully!")
-        except Exception as e:
-            print(f"❌ Failed to download model: {e}")
-            raise RuntimeError(f"Model download failed: {e}")
-    else:
-        print(f"✅ Model already exists at {MODEL_PATH}")
+
+
 
 def load_siamese_model():
     """Load the model with custom objects - THIS CAN TAKE UP TO 6 MINUTES"""
@@ -62,8 +51,6 @@ def load_siamese_model():
         print("🚀 STARTING MODEL LOAD - THIS MAY TAKE UP TO 6 MINUTES")
         print("=" * 60)
         
-        # Download first
-        download_model()
         
         print("📦 Importing TensorFlow and Keras (can take 2-3 minutes)...")
         import_start = time.time()

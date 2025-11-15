@@ -11,6 +11,8 @@ RUN pip install --no-cache-dir --upgrade pip && \
     pip install --no-cache-dir -r requirements.txt
 
 COPY siamese_api.py .
+COPY siamese_model.h5 .
+
 
 ENV TF_CPP_MIN_LOG_LEVEL=2
 ENV TF_FORCE_GPU_ALLOW_GROWTH=true
