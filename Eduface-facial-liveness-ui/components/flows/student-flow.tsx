@@ -7,39 +7,57 @@ import AttendanceConfirmation from "@/components/student/attendance-confirmation
 
 type StudentStep = "code-entry" | "facial-scan" | "confirmation"
 
+interface SessionInfo {
+  session_id: string
+  unit: { name: string }
+  // ... any other fields from session lookup
+}
+
+interface VerificationResult {
+  success: boolean
+  studentId: string
+  sessionId: string
+  unitName: string
+  timestamp: Date | string
+  confidence: number
+  avgConfidence?: number
+  livenessScore?: number
+  matchCount?: number
+  totalComparisons?: number
+}
+
 interface StudentFlowProps {
   onLogout: () => void
 }
 
 export default function StudentFlow({ onLogout }: StudentFlowProps) {
   const [step, setStep] = useState<StudentStep>("code-entry")
-  const [sessionData, setSessionData] = useState<any>(null)
-  const [sessionId, setSessionId] = useState<string>("")
+  
+  // Step 1: Only store session lookup result
+  const [sessionInfo, setSessionInfo] = useState<SessionInfo | null>(null)
+  
+  // Step 2: Only store final verification result
+  const [verificationResult, setVerificationResult] = useState<VerificationResult | null>(null)
 
   // === 1. Code Entry → Facial Scan ===
-  const handleCodeSubmit = (sessionData: any, session_id: string) => {
+  const handleCodeSubmit = (sessionData: SessionInfo, session_id: string) => {
     console.log("Session validated:", { session_id, unit: sessionData.unit?.name })
-    setSessionData(sessionData)
-    setSessionId(session_id)  // ← This is the session_id (e.g., "sess_math101_2025")
+    setSessionInfo(sessionData)
     setStep("facial-scan")
   }
 
   // === 2. Facial Scan → Confirmation ===
-  const handleScanComplete = (result: any) => {
+  const handleScanComplete = (result: VerificationResult) => {
     console.log("Verification complete:", result)
-    setSessionData((prev: any) => ({
-      ...prev,
-      ...result,
-      verificationTimestamp: new Date().toISOString()
-    }))
+    setVerificationResult(result)
     setStep("confirmation")
   }
 
   // === 3. Reset Flow ===
   const handleReset = () => {
     setStep("code-entry")
-    setSessionData(null)
-    setSessionId("")
+    setSessionInfo(null)
+    setVerificationResult(null)
   }
 
   return (
@@ -53,19 +71,19 @@ export default function StudentFlow({ onLogout }: StudentFlowProps) {
       )}
 
       {/* STEP 2: Facial Recognition */}
-      {step === "facial-scan" && sessionData && (
+      {step === "facial-scan" && sessionInfo && (
         <FacialScan 
-          sessionData={sessionData}
-          sessionId={sessionId}  // ← PASSED TO rapid-handler
+          sessionData={sessionInfo}
+          sessionId={sessionInfo.session_id}  // Pass the actual session_id
           onComplete={handleScanComplete}
           onBack={() => setStep("code-entry")}
         />
       )}
 
       {/* STEP 3: Confirmation */}
-      {step === "confirmation" && sessionData && (
+      {step === "confirmation" && verificationResult && (
         <AttendanceConfirmation 
-          data={sessionData}
+          data={verificationResult}   // Clean, correct data
           onReset={handleReset}
           onLogout={onLogout}
         />
