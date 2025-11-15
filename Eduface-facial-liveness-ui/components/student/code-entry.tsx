@@ -11,7 +11,7 @@ import { useApp } from "@/lib/context"
 import { AlertCircle, Copy, CheckCircle } from "lucide-react"
 
 interface CodeEntryProps {
-  onSubmit: (sessionData: any, accessCode: string) => void
+  onSubmit: (sessionData: any, session_id: string) => void
   onLogout: () => void
 }
 
@@ -102,7 +102,7 @@ export default function CodeEntry({ onSubmit, onLogout }: CodeEntryProps) {
 
       console.log("Unit found:", unit.name)
 
-      // === BUILD FINAL DATA (NO COURSE) ===
+      // === BUILD FINAL DATA ===
       const sessionData = {
         id: session.id,
         session_id: session.session_id,
@@ -125,7 +125,7 @@ export default function CodeEntry({ onSubmit, onLogout }: CodeEntryProps) {
 
       setSuccess(true)
       setTimeout(() => {
-        onSubmit(sessionData, accessCode)
+        onSubmit(sessionData, session.session_id)  // ← FIXED: Pass session_id
       }, 600)
 
     } catch (err: any) {

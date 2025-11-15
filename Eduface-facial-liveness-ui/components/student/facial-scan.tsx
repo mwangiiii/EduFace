@@ -11,10 +11,10 @@ interface FacialScanProps {
   onComplete: (result: any) => void
   onBack: () => void
   sessionData: any
-  accessCode: string
+  sessionId: string
 }
 
-export default function FacialScan({ onComplete, onBack, sessionData, accessCode }: FacialScanProps) {
+export default function FacialScan({ onComplete, onBack, sessionData, sessionId }: FacialScanProps) {
   const [studentId, setStudentId] = useState("")
   const [studentUuid, setStudentUuid] = useState<string | null>(null)
   const [lookupError, setLookupError] = useState<string | null>(null)
@@ -29,8 +29,8 @@ export default function FacialScan({ onComplete, onBack, sessionData, accessCode
 
   // === LOG PROPS ON MOUNT ===
   useEffect(() => {
-    console.log("FacialScan received:", { sessionData, accessCode })
-  }, [sessionData, accessCode])
+    console.log("FacialScan received:", { sessionData, sessionId })
+  }, [sessionData, sessionId])
 
   // === STUDENT LOOKUP ===
   const lookupStudent = async () => {
@@ -160,8 +160,8 @@ export default function FacialScan({ onComplete, onBack, sessionData, accessCode
       return
     }
     
-    if (!accessCode) {
-      alert("Session access code missing. Please contact your instructor or try again from the session dashboard.")
+    if (!sessionId) {
+      alert("Session ID missing. Please restart from the code entry.")
       return
     }
 
@@ -214,15 +214,16 @@ export default function FacialScan({ onComplete, onBack, sessionData, accessCode
         throw new Error("Supabase configuration missing")
       }
 
+      // === FIXED: Send session_id, not access_code ===
       const body = {
         student_uuid: studentUuid,
         image: base64,
-        access_code: accessCode,
+        session_id: sessionId  // ← CORRECT FIELD
       }
 
       console.log("Sending to rapid-handler:", {
         student_uuid: studentUuid,
-        access_code: accessCode,
+        session_id: sessionId,
         image_size: base64.length,
       })
 
@@ -250,7 +251,6 @@ export default function FacialScan({ onComplete, onBack, sessionData, accessCode
       setProgress(80)
 
       // === CHECK VERIFICATION RESULT ===
-      // The new structure returns data.siamese.verified and data.siamese.metrics
       if (data.error) {
         throw new Error(data.details || data.error)
       }
@@ -275,7 +275,6 @@ export default function FacialScan({ onComplete, onBack, sessionData, accessCode
       if (verified && maxSimilarity >= 0.8) {
         setVerificationStatus("Verification successful!")
         
-        // Small delay to show success message
         setTimeout(() => {
           stopCamera()
           onComplete({
@@ -295,7 +294,6 @@ export default function FacialScan({ onComplete, onBack, sessionData, accessCode
           })
         }, 500)
       } else {
-        // Verification failed
         const failureMessage = 
           `Face verification failed:\n\n` +
           `Max Similarity: ${(maxSimilarity * 100).toFixed(1)}%\n` +
@@ -322,7 +320,7 @@ export default function FacialScan({ onComplete, onBack, sessionData, accessCode
       } else if (err.message.includes("not enrolled")) {
         errorMessage += "Face not enrolled. Please complete enrollment first."
       } else if (err.message.includes("session")) {
-        errorMessage += "Invalid session. Please check your access code."
+        errorMessage += "Invalid session. Please check your code and try again."
       } else {
         errorMessage += err.message || "Unknown error occurred"
       }
@@ -470,7 +468,7 @@ export default function FacialScan({ onComplete, onBack, sessionData, accessCode
                   
                   {cameraReady && !scanning && (
                     <p className="text-xs text-green-600 font-medium">
-                      ✓ Camera ready
+                      Camera ready
                     </p>
                   )}
                 </div>

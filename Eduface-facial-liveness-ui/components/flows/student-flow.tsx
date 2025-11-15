@@ -14,56 +14,60 @@ interface StudentFlowProps {
 export default function StudentFlow({ onLogout }: StudentFlowProps) {
   const [step, setStep] = useState<StudentStep>("code-entry")
   const [sessionData, setSessionData] = useState<any>(null)
+  const [sessionId, setSessionId] = useState<string>("")
 
-  const handleCodeSubmit = (sessionData: any, accessCode: string) => {
-    // sessionData comes from CodeEntry, which includes all session info and unit
+  // === 1. Code Entry → Facial Scan ===
+  const handleCodeSubmit = (sessionData: any, session_id: string) => {
+    console.log("Session validated:", { session_id, unit: sessionData.unit?.name })
     setSessionData(sessionData)
+    setSessionId(session_id)  // ← This is the session_id (e.g., "sess_math101_2025")
     setStep("facial-scan")
-    // Store accessCode separately if needed
-    setAccessCode(accessCode)
   }
 
+  // === 2. Facial Scan → Confirmation ===
   const handleScanComplete = (result: any) => {
-    // Merge facial scan result with session data
-    setSessionData((prev: any) => ({ 
-      ...prev, 
+    console.log("Verification complete:", result)
+    setSessionData((prev: any) => ({
+      ...prev,
       ...result,
-      verificationTimestamp: new Date()
+      verificationTimestamp: new Date().toISOString()
     }))
     setStep("confirmation")
   }
 
+  // === 3. Reset Flow ===
   const handleReset = () => {
     setStep("code-entry")
     setSessionData(null)
+    setSessionId("")
   }
-
-  const [accessCode, setAccessCode] = useState<string>("");
 
   return (
     <div className="min-h-screen bg-background">
+      {/* STEP 1: Enter Session Code */}
       {step === "code-entry" && (
         <CodeEntry 
           onSubmit={handleCodeSubmit} 
           onLogout={onLogout} 
         />
       )}
-      
-      {step === "facial-scan" && (
+
+      {/* STEP 2: Facial Recognition */}
+      {step === "facial-scan" && sessionData && (
         <FacialScan 
           sessionData={sessionData}
-          accessCode={accessCode}
-          onComplete={handleScanComplete} 
-          onBack={() => setStep("code-entry")} 
+          sessionId={sessionId}  // ← PASSED TO rapid-handler
+          onComplete={handleScanComplete}
+          onBack={() => setStep("code-entry")}
         />
       )}
-      
-      
-      {step === "confirmation" && (
+
+      {/* STEP 3: Confirmation */}
+      {step === "confirmation" && sessionData && (
         <AttendanceConfirmation 
-          data={sessionData} 
-          onReset={handleReset} 
-          onLogout={onLogout} 
+          data={sessionData}
+          onReset={handleReset}
+          onLogout={onLogout}
         />
       )}
     </div>
