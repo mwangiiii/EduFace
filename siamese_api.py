@@ -4,14 +4,13 @@ import numpy as np
 from PIL import Image
 import io
 import os
-
 import sys
 import traceback
-import asyncio
+import requests  # More reliable than gdown
 from threading import Thread, Lock
 import time
 
-# Initialize FastAPI FIRST - this allows health checks to pass immediately
+# Initialize FastAPI FIRST
 app = FastAPI()
 
 # Global variables for model state
@@ -26,12 +25,56 @@ load_start_time = None
 # 1. MODEL DOWNLOAD & LOAD
 # ================================
 MODEL_PATH = "siamese_model.h5"
+MODEL_URL = os.getenv("MODEL_URL", "https://github.com/mwangiiii/EduFace/releases/download/v1.0.0-model/siamese_model.h5")
 
-
-
+def download_model():
+    """Download model from GitHub release or other URL"""
+    if os.path.exists(MODEL_PATH):
+        file_size = os.path.getsize(MODEL_PATH) / (1024*1024)
+        print(f"✅ Model already exists at {MODEL_PATH} ({file_size:.2f}MB)")
+        return
+    
+    try:
+        print("=" * 60)
+        print("🔽 DOWNLOADING MODEL FROM CLOUD")
+        print(f"📍 URL: {MODEL_URL}")
+        print("=" * 60)
+        
+        # Download with requests (more reliable than gdown)
+        response = requests.get(MODEL_URL, stream=True, timeout=600, allow_redirects=True)
+        response.raise_for_status()
+        
+        total_size = int(response.headers.get('content-length', 0))
+        downloaded = 0
+        
+        print(f"📊 Total size: {total_size/(1024*1024):.2f}MB")
+        
+        with open(MODEL_PATH, 'wb') as f:
+            for chunk in response.iter_content(chunk_size=8192):
+                if chunk:
+                    f.write(chunk)
+                    downloaded += len(chunk)
+                    if total_size > 0:
+                        percent = (downloaded / total_size) * 100
+                        mb_downloaded = downloaded / (1024*1024)
+                        mb_total = total_size / (1024*1024)
+                        print(f"⏳ Progress: {percent:.1f}% ({mb_downloaded:.1f}MB / {mb_total:.1f}MB)", end='\r')
+        
+        file_size = os.path.getsize(MODEL_PATH) / (1024*1024)
+        print(f"\n✅ Model downloaded successfully! Size: {file_size:.2f}MB")
+        print("=" * 60)
+        
+    except requests.exceptions.RequestException as e:
+        print(f"❌ Download failed: {e}")
+        traceback.print_exc()
+        raise RuntimeError(f"Could not download model from {MODEL_URL}: {e}")
+    except Exception as e:
+        print(f"❌ Unexpected error during download: {e}")
+        traceback.print_exc()
+        raise
 
 def load_siamese_model():
-    """Load the model with custom objects - THIS CAN TAKE UP TO 6 MINUTES"""
+    """Load the model with custom objects"""
     global model, model_loading, model_error, load_start_time
     
     with model_lock:
@@ -48,14 +91,16 @@ def load_siamese_model():
     
     try:
         print("=" * 60)
-        print("🚀 STARTING MODEL LOAD - THIS MAY TAKE UP TO 6 MINUTES")
+        print("🚀 STARTING MODEL INITIALIZATION")
         print("=" * 60)
         
+        # Download model first
+        download_model()
         
-        print("📦 Importing TensorFlow and Keras (can take 2-3 minutes)...")
+        print("📦 Importing TensorFlow and Keras...")
         import_start = time.time()
         
-        # Configure TensorFlow before importing
+        # Configure TensorFlow
         os.environ['TF_CPP_MIN_LOG_LEVEL'] = '2'
         os.environ['TF_FORCE_GPU_ALLOW_GROWTH'] = 'true'
         
@@ -63,8 +108,6 @@ def load_siamese_model():
         
         # Disable GPU
         tf.config.set_visible_devices([], 'GPU')
-        
-        # Set thread limits to reduce resource usage
         tf.config.threading.set_inter_op_parallelism_threads(2)
         tf.config.threading.set_intra_op_parallelism_threads(2)
         
@@ -72,8 +115,9 @@ def load_siamese_model():
         from keras.layers import Layer
         
         import_time = time.time() - import_start
-        print(f"✅ TensorFlow imported successfully in {import_time:.1f} seconds")
+        print(f"✅ TensorFlow imported in {import_time:.1f}s")
         
+        # Define custom layer
         print("🔧 Defining custom L1Dist layer...")
         class L1Dist(Layer):
             def __init__(self, **kwargs):
@@ -82,12 +126,9 @@ def load_siamese_model():
             def call(self, input_embedding, validation_embedding):
                 return tf.math.abs(input_embedding - validation_embedding)
         
+        # Load model
         print(f"📂 Loading model from {MODEL_PATH}...")
-        file_size = os.path.getsize(MODEL_PATH) / (1024*1024)
-        print(f"📊 Model file size: {file_size:.2f} MB")
-        
-        load_model_start = time.time()
-        print("⏳ Loading model architecture and weights (can take 3-4 minutes)...")
+        load_start = time.time()
         
         loaded_model = load_model(
             MODEL_PATH, 
@@ -95,11 +136,11 @@ def load_siamese_model():
             compile=False
         )
         
-        load_model_time = time.time() - load_model_start
-        print(f"✅ Model loaded in {load_model_time:.1f} seconds")
+        load_time = time.time() - load_start
+        print(f"✅ Model loaded in {load_time:.1f}s")
         
-        # Test the model
-        print("🧪 Testing model with dummy input...")
+        # Test model
+        print("🧪 Testing model...")
         test_start = time.time()
         dummy_input = np.random.rand(1, 100, 100, 3).astype(np.float32)
         test_pred = loaded_model.predict([dummy_input, dummy_input], verbose=0)
@@ -108,7 +149,7 @@ def load_siamese_model():
         
         total_time = time.time() - load_start_time
         print("=" * 60)
-        print(f"🎉 MODEL READY! Total load time: {total_time:.1f} seconds ({total_time/60:.1f} minutes)")
+        print(f"🎉 MODEL READY! Total time: {total_time:.1f}s ({total_time/60:.1f} min)")
         print("=" * 60)
         
         with model_lock:
@@ -123,8 +164,8 @@ def load_siamese_model():
             model_loading = False
         
         elapsed = time.time() - load_start_time if load_start_time else 0
-        print(f"❌ Failed to load model after {elapsed:.1f} seconds: {e}")
-        print(traceback.format_exc())
+        print(f"❌ Failed to load model after {elapsed:.1f}s: {e}")
+        traceback.print_exc()
         raise
 
 def trigger_model_load_background():
@@ -145,31 +186,26 @@ def trigger_model_load_background():
 # ================================
 @app.on_event("startup")
 async def startup_event():
-    """Start model loading in background thread - don't block startup"""
+    """Start model loading in background"""
     print("=" * 60)
     print("🚀 FastAPI Application Starting")
     print("=" * 60)
-    print(f"Python version: {sys.version}")
-    print(f"Working directory: {os.getcwd()}")
+    print(f"Python: {sys.version}")
+    print(f"Working dir: {os.getcwd()}")
     print(f"Model path: {MODEL_PATH}")
-    print(f"Model exists: {os.path.exists(MODEL_PATH)}")
+    print(f"Model URL: {MODEL_URL}")
     
-    # Start loading model in background immediately
     trigger_model_load_background()
     
-    print("✅ Server ready to accept health checks")
-    print("⏳ Model loading in background (check /health for status)")
+    print("✅ Server ready for health checks")
+    print("⏳ Model loading in background (check /health)")
     print("=" * 60)
 
 # ================================
 # 3. IMAGE PREPROCESSING
 # ================================
 def preprocess_image(image_bytes):
-    """
-    Preprocess image bytes for model input.
-    Expected input: RGB image
-    Output: Normalized numpy array of shape (1, 100, 100, 3)
-    """
+    """Preprocess image for model input"""
     try:
         img = Image.open(io.BytesIO(image_bytes)).convert('RGB')
         img = img.resize((100, 100))
@@ -184,7 +220,7 @@ def preprocess_image(image_bytes):
 # ================================
 @app.get("/")
 def root():
-    """Health check endpoint - ALWAYS returns 200 for container orchestrators"""
+    """Health check endpoint"""
     elapsed = None
     if load_start_time:
         elapsed = time.time() - load_start_time
@@ -197,19 +233,19 @@ def root():
         "model_loaded": model is not None,
         "model_loading": model_loading,
         "loading_time_seconds": round(elapsed, 1) if elapsed else None,
-        "estimated_wait_minutes": "2-6 minutes" if model_loading else None,
+        "estimated_wait_minutes": "3-5 minutes" if model_loading else None,
         "error": model_error
     }
 
 @app.get("/health")
 def health():
-    """Detailed health check - ALWAYS returns 200"""
+    """Detailed health check"""
     elapsed = None
     if load_start_time:
         elapsed = time.time() - load_start_time
     
     return {
-        "server_status": "healthy",  # Server is always healthy
+        "server_status": "healthy",
         "model_status": "ready" if model is not None else "loading" if model_loading else "not_started" if not model_load_started else "error",
         "model_loaded": model is not None,
         "model_loading": model_loading,
@@ -217,51 +253,13 @@ def health():
         "model_exists": os.path.exists(MODEL_PATH),
         "model_size_mb": f"{os.path.getsize(MODEL_PATH) / (1024*1024):.2f}" if os.path.exists(MODEL_PATH) else None,
         "loading_time_seconds": round(elapsed, 1) if elapsed else None,
-        "estimated_total_time": "2-6 minutes",
-        "error": model_error,
-        "note": "Server is ready but model may still be loading. Check model_loaded field."
-    }
-
-@app.post("/load-model")
-async def load_model_endpoint(background_tasks: BackgroundTasks):
-    """
-    Manually trigger model loading (if not already loading/loaded)
-    Useful for pre-warming the model
-    """
-    if model is not None:
-        return {"status": "already_loaded", "message": "Model is already loaded"}
-    
-    if model_loading:
-        elapsed = time.time() - load_start_time if load_start_time else 0
-        return {
-            "status": "loading", 
-            "message": "Model is currently loading",
-            "loading_time_seconds": round(elapsed, 1),
-            "estimated_remaining": "2-6 minutes total"
-        }
-    
-    trigger_model_load_background()
-    
-    return {
-        "status": "started",
-        "message": "Model loading started in background",
-        "estimated_time": "2-6 minutes",
-        "check_status_at": "/health"
+        "error": model_error
     }
 
 @app.post("/predict")
 async def predict(file1: UploadFile = File(...), file2: UploadFile = File(...)):
-    """
-    Compare two images using the Siamese network.
+    """Compare two images using Siamese network"""
     
-    Args:
-        file1: First image file
-        file2: Second image file
-    
-    Returns:
-        JSON with similarity score (0-1, where 1 means identical)
-    """
-    # If model is loading, return helpful message
     if model_loading:
         elapsed = time.time() - load_start_time if load_start_time else 0
         raise HTTPException(
@@ -269,46 +267,27 @@ async def predict(file1: UploadFile = File(...), file2: UploadFile = File(...)):
             detail={
                 "error": "Model is still loading",
                 "loading_time_seconds": round(elapsed, 1),
-                "estimated_total_time": "2-6 minutes",
-                "message": "Please wait and try again. Check /health for status."
+                "message": "Please wait and check /health for status"
             }
         )
     
-    # If model hasn't started loading, trigger it
-    if not model_load_started and model is None:
-        trigger_model_load_background()
-        raise HTTPException(
-            status_code=503,
-            detail={
-                "error": "Model loading initiated",
-                "message": "Model was not loaded. Loading started now. Please wait 2-6 minutes and try again.",
-                "check_status_at": "/health"
-            }
-        )
-    
-    # If model failed to load
     if model is None:
         error_msg = f"Model failed to load. Error: {model_error}" if model_error else "Model not loaded"
         raise HTTPException(status_code=503, detail=error_msg)
     
     try:
-        # Read image bytes
         image1_bytes = await file1.read()
         image2_bytes = await file2.read()
         
-        # Validate files are not empty
         if not image1_bytes or not image2_bytes:
             raise HTTPException(status_code=400, detail="One or both files are empty")
         
-        # Preprocess images
         img1 = preprocess_image(image1_bytes)
         img2 = preprocess_image(image2_bytes)
         
-        # Make prediction
         prediction = model.predict([img1, img2], verbose=0)
         similarity = float(prediction[0][0])
         
-        # Determine if images are similar (threshold can be adjusted)
         threshold = 0.5
         is_similar = similarity >= threshold
         
@@ -322,5 +301,5 @@ async def predict(file1: UploadFile = File(...), file2: UploadFile = File(...)):
         raise HTTPException(status_code=400, detail=str(e))
     except Exception as e:
         print(f"Error during prediction: {e}")
-        print(traceback.format_exc())
+        traceback.print_exc()
         raise HTTPException(status_code=500, detail=f"Prediction failed: {str(e)}")
