@@ -148,7 +148,7 @@ export default function AttendanceConfirmation({
                 <div>
                   <p className="text-sm text-gray-500 dark:text-gray-400">Liveness Score</p>
                   <p className="font-medium text-gray-900 dark:text-white">
-                    {pct(data.livenessScore-shape)}
+                    {pct(data.livenessScore)}
                   </p>
                 </div>
               </div>
