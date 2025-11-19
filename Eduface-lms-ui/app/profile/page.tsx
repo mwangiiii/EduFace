@@ -430,7 +430,8 @@ export default function ProfilePage() {
   }
 
   // CORRECTED: Use direct fetch with manual URL construction to avoid supabase.functions.url issue
-  const handleSubmitEnrollment = async () => {
+  // Replace the handleSubmitEnrollment function in your page.tsx
+const handleSubmitEnrollment = async () => {
   const totalImages = capturedImages.length
   if (totalImages < 20) {
     toast.error(`Need at least 20 images. You have ${totalImages}. Keep capturing!`)
@@ -443,6 +444,12 @@ export default function ProfilePage() {
   }
 
   setIsEnrolling(true)
+  
+  // Create abort controller for timeout
+  const controller = new AbortController()
+  const timeoutId = setTimeout(() => controller.abort(), 120000) // 120 second timeout
+  
+
   try {
     const { data: { session } } = await supabase.auth.getSession()
     if (!session) {
@@ -457,7 +464,8 @@ export default function ProfilePage() {
 
     console.log('Submitting enrollment:', {
       student_id: profile.student.student_id,
-      imageCount: images.length
+      imageCount: images.length,
+      timestamp: new Date().toISOString()
     })
 
     const response = await fetch(
@@ -469,14 +477,29 @@ export default function ProfilePage() {
           'Content-Type': 'application/json',
         },
         body: JSON.stringify({
-          student_id: profile.student.student_id,  // ← Only this (the visible ID like STU123)
-          images,                                  // ← Up to 30 images
-          // NO student_uuid sent from frontend anymore!
+          student_id: profile.student.student_id,
+          images,
         }),
+        signal: controller.signal, // Add timeout signal
       }
     )
 
-    const result = await response.json()
+    clearTimeout(timeoutId) // Clear timeout if request completes
+
+    console.log('Response status:', response.status)
+    console.log('Response headers:', Object.fromEntries(response.headers.entries()))
+
+    let result
+    try {
+      result = await response.json()
+    } catch (parseError) {
+      console.error('Failed to parse response:', parseError)
+      const text = await response.text()
+      console.error('Response text:', text)
+      throw new Error('Invalid response from server')
+    }
+
+    console.log('Response body:', result)
 
     if (!response.ok) {
       throw new Error(result.error || `Server error: ${response.status}`)
@@ -494,8 +517,14 @@ export default function ProfilePage() {
     toast.success(`Enrollment Complete! 🎉 ${result.images_processed} images saved.`)
     handleCloseModal()
   } catch (error: any) {
+    clearTimeout(timeoutId)
     console.error('Enrollment failed:', error)
-    toast.error('Failed: ' + error.message)
+    
+    if (error.name === 'AbortError') {
+      toast.error('Request timed out. Please try again with fewer images or check your connection.')
+    } else {
+      toast.error('Failed: ' + error.message)
+    }
   } finally {
     setIsEnrolling(false)
   }

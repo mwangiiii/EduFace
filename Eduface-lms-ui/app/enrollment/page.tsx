@@ -1,6 +1,8 @@
+// FIXED: Complete enrollment page with correct API endpoint and CORS handling
 "use client";
 
 import React, { useState, useRef, useEffect, useCallback } from "react";
+import { createClient } from "@supabase/supabase-js";
 import { Sidebar } from "@/components/sidebar";
 import { Navbar } from "@/components/navbar";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
@@ -34,7 +36,7 @@ export default function EnrollmentPage() {
   const IMAGES_PER_PHASE = 6;
 
   const phases = [
-    { name: "Frontal", instruction: "Look straight at camera", angle: "frontal" },
+    { name: "Frontal", instruction: "Look straight at the camera", angle: "frontal" },
     { name: "Left Profile", instruction: "Slowly turn head left (~45°)", angle: "left-45" },
     { name: "Right Profile", instruction: "Slowly turn head right (~45°)", angle: "right-45" },
     { name: "Look Up", instruction: "Tilt head up slightly", angle: "up-20" },
@@ -44,32 +46,48 @@ export default function EnrollmentPage() {
   const startCamera = async () => {
     try {
       const stream = await navigator.mediaDevices.getUserMedia({
-        video: { width: 1280, height: 720, facingMode: "user" } // Higher res = better quality
+        video: { width: 1280, height: 720, facingMode: "user" },
       });
       if (videoRef.current) {
         videoRef.current.srcObject = stream;
         streamRef.current = stream;
       }
     } catch (err) {
-      setError("Camera access denied. Please allow camera permission.");
+      setError("Camera access denied or not available. Please allow camera permission.");
+      console.error("Camera error:", err);
     }
   };
 
   const stopCamera = () => {
     streamRef.current?.getTracks().forEach(t => t.stop());
     streamRef.current = null;
+    if (videoRef.current) {
+      videoRef.current.srcObject = null;
+    }
   };
 
   const captureFrame = useCallback(() => {
     if (!videoRef.current || !canvasRef.current) return null;
+
     const video = videoRef.current;
     const canvas = canvasRef.current;
-    canvas.width = video.videoWidth;
-    canvas.height = video.videoHeight;
     const ctx = canvas.getContext("2d");
     if (!ctx) return null;
-    ctx.drawImage(video, 0, 0);
-    return canvas.toDataURL("image/jpeg", 0.95); // Max quality
+
+    canvas.width = video.videoWidth;
+    canvas.height = video.videoHeight;
+    ctx.imageSmoothingEnabled = false;
+    ctx.drawImage(video, 0, 0, canvas.width, canvas.height);
+
+    // Use JPEG with high quality to reduce size
+    const dataUrl = canvas.toDataURL("image/jpeg", 0.95);
+
+    if (dataUrl.length > 3_500_000) {
+      console.warn("Image too large, reducing quality");
+      return canvas.toDataURL("image/jpeg", 0.85);
+    }
+
+    return dataUrl;
   }, []);
 
   const startCaptureSession = async () => {
@@ -79,15 +97,14 @@ export default function EnrollmentPage() {
     setError("");
     await startCamera();
 
-    const captureForPhase = (phaseIndex: number) => {
-      return new Promise<void>((resolve) => {
+    const captureForPhase = (phaseIndex: number): Promise<void> => {
+      return new Promise((resolve) => {
         let count = 0;
         const interval = setInterval(() => {
           const frame = captureFrame();
           if (frame) {
-            const cleanBase64 = frame.split(",")[1]; // Remove data: prefix
             setCapturedImages(prev => [...prev, {
-              base64: cleanBase64,
+              base64: frame,
               angle: phases[phaseIndex].angle
             }]);
             count++;
@@ -99,17 +116,19 @@ export default function EnrollmentPage() {
                   captureForPhase(phaseIndex + 1).then(resolve);
                 } else {
                   setIsCapturing(false);
+                  stopCamera();
                   resolve();
                 }
-              }, 1500); // Pause between phases
+              }, 1500);
             }
           }
-        }, 800); // 800ms = natural movement, high quality
+        }, 800);
 
+        // Safety timeout
         setTimeout(() => {
           clearInterval(interval);
           resolve();
-        }, 10000);
+        }, 12000);
       });
     };
 
@@ -118,8 +137,14 @@ export default function EnrollmentPage() {
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
-    if (capturedImages.length < 25) {
-      setError("Please complete all capture phases (30 images required)");
+
+    if (capturedImages.length < TOTAL_IMAGES) {
+      setError(`Please complete all phases. Captured only ${capturedImages.length}/${TOTAL_IMAGES} images.`);
+      return;
+    }
+
+    if (!studentId.trim()) {
+      setError("Please enter your Student ID");
       return;
     }
 
@@ -127,37 +152,88 @@ export default function EnrollmentPage() {
     setError("");
 
     try {
-      const response = await fetch("/functions/v1/enroll-face", {
-        method: "POST",
-        headers: {
-          "Content-Type": "application/json",
-          Authorization: `Bearer ${(await (window as any).supabase.auth.getSession()).data.session?.access_token}`
-        },
-        body: JSON.stringify({
-          student_id: studentId.trim().toUpperCase(),
-          images: capturedImages // Now includes angle hints!
-        })
-      });
+      // Initialize Supabase client
+      const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL;
+      const supabaseAnonKey = process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY;
 
-      const result = await response.json();
-
-      if (!response.ok) {
-        throw new Error(result.error || result.details || "Enrollment failed");
+      if (!supabaseUrl || !supabaseAnonKey) {
+        throw new Error("Supabase configuration missing. Check your environment variables.");
       }
 
+      const supabase = createClient(supabaseUrl, supabaseAnonKey);
+
+      // Get current session
+      const { data: { session }, error: sessionError } = await supabase.auth.getSession();
+      
+      if (sessionError) {
+        throw new Error(`Session error: ${sessionError.message}`);
+      }
+
+      if (!session) {
+        throw new Error("Not authenticated. Please log in again.");
+      }
+
+      console.log("Submitting enrollment:", {
+        student_id: studentId.trim().toUpperCase(),
+        imageCount: capturedImages.length,
+        user_id: session.user.id,
+      });
+
+      // Call the Edge Function using Supabase client (handles CORS automatically)
+      const { data, error } = await supabase.functions.invoke('enroll-face', {
+        body: {
+          student_id: studentId.trim().toUpperCase(),
+          images: capturedImages,
+        },
+      });
+
+      if (error) {
+        console.error("Supabase function error:", error);
+        throw new Error(error.message || "Enrollment failed");
+      }
+
+      console.log("Function response:", data);
+
+      if (!data?.success) {
+        const errorMsg = data?.error || data?.details || "Enrollment failed";
+        throw new Error(errorMsg);
+      }
+
+      console.log("Enrollment successful:", data);
       setSubmitted(true);
+
     } catch (err: any) {
       console.error("Enrollment error:", err);
-      setError(err.message.includes("valid images") 
-        ? "Some images were low quality. Try better lighting and hold still."
-        : err.message
-      );
+      
+      let errorMessage = "Unknown error during enrollment";
+      
+      if (err.message) {
+        errorMessage = err.message;
+      } else if (typeof err === 'string') {
+        errorMessage = err;
+      }
+
+      // Provide more helpful error messages
+      if (errorMessage.includes("fetch")) {
+        errorMessage = "Network error. Please check your internet connection and try again.";
+      } else if (errorMessage.includes("CORS")) {
+        errorMessage = "Connection blocked. Please contact system administrator.";
+      } else if (errorMessage.includes("authenticated")) {
+        errorMessage = "Session expired. Please log out and log in again.";
+      }
+
+      setError(errorMessage);
     } finally {
       setSubmitting(false);
     }
   };
 
-  useEffect(() => () => stopCamera(), []);
+  // Cleanup on unmount
+  useEffect(() => {
+    return () => {
+      stopCamera();
+    };
+  }, []);
 
   if (submitted) {
     return (
@@ -169,14 +245,22 @@ export default function EnrollmentPage() {
             <Card className="max-w-md mx-auto">
               <CardContent className="pt-12 pb-12 text-center">
                 <CheckCircle2 className="h-20 w-20 text-green-500 mx-auto mb-6" />
-                <h2 className="text-3xl font-bold mb-3">Enrollment Complete!</h2>
-                <p className="text-lg text-muted-foreground mb-2">
-                  Successfully enrolled with <strong>30 high-quality images</strong>
+                <h2 className="text-3xl font-bold mb-3">Enrollment Successful!</h2>
+                <p className="text-lg text-muted-foreground mb-4">
+                  Your face is now securely enrolled with <strong>30 multi-angle images</strong>
                 </p>
-                <p className="text-sm text-green-600 font-medium">
-                  ✓ Excellent multi-angle coverage<br/>
-                  ✓ Maximum protection against deepfakes & impersonation
-                </p>
+                <div className="text-sm text-green-600 font-medium space-y-1">
+                  <p>✓ Excellent quality score</p>
+                  <p>✓ Maximum protection against impersonation</p>
+                  <p>✓ Ready for multi-frame verification</p>
+                </div>
+                <Button 
+                  onClick={() => window.location.href = '/dashboard'}
+                  className="mt-6"
+                  size="lg"
+                >
+                  Go to Dashboard
+                </Button>
               </CardContent>
             </Card>
           </main>
@@ -185,8 +269,8 @@ export default function EnrollmentPage() {
     );
   }
 
-  const currentPhaseData = phases[currentPhase];
   const progress = (capturedImages.length / TOTAL_IMAGES) * 100;
+  const currentPhaseData = phases[currentPhase] || phases[0];
 
   return (
     <div className="flex">
@@ -197,28 +281,43 @@ export default function EnrollmentPage() {
           <div className="max-w-5xl mx-auto">
             <h1 className="text-4xl font-bold mb-3">Secure Face Enrollment</h1>
             <p className="text-lg text-muted-foreground mb-8">
-              We collect <strong>30 multi-angle photos</strong> for maximum security and accuracy
+              We capture <strong>30 high-quality, multi-angle photos</strong> for maximum accuracy and security.
             </p>
 
             <div className="grid lg:grid-cols-2 gap-8">
-              {/* Form */}
               <Card>
                 <CardHeader>
                   <CardTitle>Student Information</CardTitle>
+                  <CardDescription>Please fill in all required fields</CardDescription>
                 </CardHeader>
                 <CardContent>
                   <form onSubmit={handleSubmit} className="space-y-5">
                     <div className="space-y-2">
                       <label className="text-sm font-medium">Full Name</label>
-                      <Input value={fullName} onChange={e => setFullName(e.target.value)} required />
+                      <Input 
+                        value={fullName} 
+                        onChange={e => setFullName(e.target.value)} 
+                        required 
+                        placeholder="John Doe"
+                      />
                     </div>
                     <div className="space-y-2">
                       <label className="text-sm font-medium">Student ID</label>
-                      <Input value={studentId} onChange={e => setStudentId(e.target.value)} required placeholder="e.g. STD20251234" />
+                      <Input 
+                        value={studentId} 
+                        onChange={e => setStudentId(e.target.value)} 
+                        required 
+                        placeholder="e.g. STD20251234"
+                      />
                     </div>
                     <div className="space-y-2">
                       <label className="text-sm font-medium">Course / Program</label>
-                      <Input value={course} onChange={e => setCourse(e.target.value)} required />
+                      <Input 
+                        value={course} 
+                        onChange={e => setCourse(e.target.value)} 
+                        required 
+                        placeholder="e.g. Computer Science"
+                      />
                     </div>
 
                     <Button
@@ -228,65 +327,84 @@ export default function EnrollmentPage() {
                       disabled={capturedImages.length < TOTAL_IMAGES || submitting}
                     >
                       {submitting ? (
-                        <>Submitting... <Loader2 className="ml-2 h-5 w-5 animate-spin" /></>
+                        <>
+                          <Loader2 className="mr-2 h-5 w-5 animate-spin" />
+                          Submitting...
+                        </>
                       ) : (
                         <>Complete Enrollment ({capturedImages.length}/{TOTAL_IMAGES})</>
                       )}
                     </Button>
+
+                    {error && (
+                      <Alert variant="destructive">
+                        <AlertCircle className="h-5 w-5" />
+                        <AlertDescription>{error}</AlertDescription>
+                      </Alert>
+                    )}
                   </form>
                 </CardContent>
               </Card>
 
-              {/* Camera & Capture */}
               <Card>
                 <CardHeader>
-                  <CardTitle>Multi-Angle Face Capture</CardTitle>
+                  <CardTitle>Multi-Angle Capture</CardTitle>
                   <CardDescription>
                     {isCapturing 
-                      ? `${currentPhaseData.name} • ${capturedImages.length}/${TOTAL_IMAGES}`
-                      : "Follow instructions for best results"}
+                      ? `${currentPhaseData.name} • ${capturedImages.length}/${TOTAL_IMAGES}` 
+                      : capturedImages.length > 0 
+                        ? `${capturedImages.length}/${TOTAL_IMAGES} images captured`
+                        : "Click below to start capturing"}
                   </CardDescription>
                 </CardHeader>
                 <CardContent className="space-y-6">
-                  <div className="ed="relative rounded-xl overflow-hidden bg-black">
-                    <video
-                      ref={videoRef}
-                      autoPlay
-                      playsInline
-                      muted
-                      className="w-full aspect-video object-cover"
+                  <div className="relative rounded-xl overflow-hidden bg-black">
+                    <video 
+                      ref={videoRef} 
+                      autoPlay 
+                      playsInline 
+                      muted 
+                      className="w-full aspect-video object-cover" 
                     />
                     <canvas ref={canvasRef} className="hidden" />
 
                     {isCapturing && (
-                      <div className="absolute inset-0 bg-black/70 flex flex-col items-center justify-center text-white">
+                      <div className="absolute inset-0 bg-black/75 flex flex-col items-center justify-center text-white">
                         <RotateCw className="h-16 w-16 animate-spin mb-6" />
                         <h3 className="text-2xl font-bold mb-2">{currentPhaseData.name}</h3>
-                        <p className="text-lg mb-6 px-8 text-center">{currentPhaseData.instruction}</p>
+                        <p className="text-lg mb-6 px-8 text-center max-w-md">{currentPhaseData.instruction}</p>
                         <div className="w-80">
                           <Progress value={progress} className="h-4" />
-                          <p className="text-center mt-3 text-sm">
-                            Capturing {capturedImages.length} of {TOTAL_IMAGES} images...
-                          </p>
+                          <p className="text-center mt-3 text-sm">Captured {capturedImages.length} of {TOTAL_IMAGES}</p>
                         </div>
                       </div>
                     )}
                   </div>
 
                   {!isCapturing && capturedImages.length === 0 && (
-                    <Button onClick={startCaptureSession} size="lg" className="w-full text-lg h-14">
+                    <Button 
+                      onClick={startCaptureSession} 
+                      size="lg" 
+                      className="w-full text-lg h-14"
+                    >
                       <Camera className="mr-3 h-6 w-6" />
-                      Begin 30-Image Secure Enrollment
+                      Start 30-Image Enrollment
                     </Button>
                   )}
 
-                  {capturedImages.length > 0 && !isCapturing && capturedImages.length < TOTAL_IMAGES && (
+                  {capturedImages.length > 0 && capturedImages.length < TOTAL_IMAGES && !isCapturing && (
                     <Alert className="border-orange-500">
                       <AlertCircle className="h-5 w-5" />
                       <AlertDescription>
-                        Capture paused. Click below to resume from {phases[currentPhase].name}
+                        Capture incomplete: {capturedImages.length}/{TOTAL_IMAGES} images captured.
+                        Click below to continue from {phases[currentPhase].name}.
                       </AlertDescription>
-                      <Button onClick={startCaptureSession} className="mt-3 w-full">
+                      <Button 
+                        onClick={startCaptureSession} 
+                        className="mt-3 w-full" 
+                        variant="outline"
+                      >
+                        <Camera className="mr-2 h-5 w-5" />
                         Resume Capture
                       </Button>
                     </Alert>
@@ -296,21 +414,30 @@ export default function EnrollmentPage() {
                     <Alert className="border-green-500 bg-green-50">
                       <CheckCircle2 className="h-6 w-6 text-green-600" />
                       <AlertDescription className="text-green-800 font-semibold">
-                        ✓ Perfect! All 30 multi-angle images captured<br/>
-                        You now have maximum protection
+                        ✓ All 30 images captured perfectly!<br />
+                        Fill in your details and click "Complete Enrollment".
                       </AlertDescription>
-                    </Alert>
-                  )}
-
-                  {error && (
-                    <Alert variant="destructive">
-                      <AlertCircle className="h-5 w-5" />
-                      <AlertDescription>{error}</AlertDescription>
                     </Alert>
                   )}
                 </CardContent>
               </Card>
             </div>
+
+            {/* Instructions */}
+            <Card className="mt-8">
+              <CardHeader>
+                <CardTitle>Enrollment Tips</CardTitle>
+              </CardHeader>
+              <CardContent>
+                <ul className="space-y-2 text-sm text-muted-foreground">
+                  <li>• Ensure good lighting on your face (avoid backlighting)</li>
+                  <li>• Remove glasses, hats, or face coverings</li>
+                  <li>• Keep your face centered in the camera frame</li>
+                  <li>• Follow the on-screen instructions for each phase</li>
+                  <li>• The entire capture process takes about 30-40 seconds</li>
+                </ul>
+              </CardContent>
+            </Card>
           </div>
         </main>
       </div>
