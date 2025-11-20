@@ -5,7 +5,7 @@ import { Button } from "@/components/ui/button"
 import { Card } from "@/components/ui/card"
 import { Input } from "@/components/ui/input"
 import { Label } from "@/components/ui/label"
-import { Loader2 } from "lucide-react"
+import { Loader2, Camera, CheckCircle2 } from "lucide-react"
 
 interface FacialScanProps {
   onComplete: (result: any) => void
@@ -23,9 +23,15 @@ export default function FacialScan({ onComplete, onBack, sessionData, sessionId 
   const [scanning, setScanning] = useState(false)
   const [verificationStatus, setVerificationStatus] = useState<string | null>(null)
   const [progress, setProgress] = useState(0)
+  const [captureCount, setCaptureCount] = useState(0)
   const [stream, setStream] = useState<MediaStream | null>(null)
   const [cameraReady, setCameraReady] = useState(false)
   const videoRef = useRef<HTMLVideoElement>(null)
+  const capturedFramesRef = useRef<string[]>([])
+
+  // === CONFIGURATION ===
+  const TOTAL_FRAMES = 30 // Capture 30 frames for redundancy
+  const CAPTURE_INTERVAL_MS = 200 // 200ms between captures = ~5 FPS (6 seconds total)
 
   // === LOG PROPS ON MOUNT ===
   useEffect(() => {
@@ -148,7 +154,25 @@ export default function FacialScan({ onComplete, onBack, sessionData, sessionId 
     if (videoRef.current) videoRef.current.srcObject = null
   }
 
-  // === START SCAN ===
+  // === CAPTURE SINGLE FRAME ===
+  const captureFrame = (): string | null => {
+    const video = videoRef.current
+    if (!video) return null
+
+    const canvas = document.createElement("canvas")
+    canvas.width = video.videoWidth
+    canvas.height = video.videoHeight
+    const ctx = canvas.getContext("2d")
+    
+    if (!ctx) return null
+
+    ctx.drawImage(video, 0, 0)
+    const base64 = canvas.toDataURL("image/jpeg", 0.85).split(",")[1]
+    
+    return base64
+  }
+
+  // === START SCAN - AUTOMATED MULTI-FRAME CAPTURE ===
   const startScan = async () => {
     if (!studentUuid) {
       alert("Please verify your Student ID first")
@@ -165,46 +189,54 @@ export default function FacialScan({ onComplete, onBack, sessionData, sessionId 
       return
     }
 
-    console.log("Starting facial scan...")
+    console.log("Starting automated capture sequence...")
     setScanning(true)
-    setProgress(0)
-    setVerificationStatus("Capturing image...")
+    setProgress(5)
+    setCaptureCount(0)
+    capturedFramesRef.current = []
+    setVerificationStatus("Get ready... Look at the camera")
+
+    // Give user 2 seconds to prepare
+    await new Promise(resolve => setTimeout(resolve, 2000))
+
+    // === CAPTURE FRAMES AUTOMATICALLY ===
+    setVerificationStatus("Capturing frames...")
     
-    // Small delay to ensure UI updates
-    setTimeout(captureAndSendFrame, 1000)
+    for (let i = 0; i < TOTAL_FRAMES; i++) {
+      const frame = captureFrame()
+      
+      if (frame) {
+        capturedFramesRef.current.push(frame)
+        setCaptureCount(i + 1)
+        setProgress(10 + (i + 1) * (50 / TOTAL_FRAMES))
+        
+        console.log(`Frame ${i + 1}/${TOTAL_FRAMES} captured (${frame.length} chars)`)
+      }
+      
+      // Wait before next capture (except last frame)
+      if (i < TOTAL_FRAMES - 1) {
+        await new Promise(resolve => setTimeout(resolve, CAPTURE_INTERVAL_MS))
+      }
+    }
+
+    console.log(`Captured ${capturedFramesRef.current.length} frames total`)
+
+    if (capturedFramesRef.current.length < 15) {
+      alert(`Only captured ${capturedFramesRef.current.length}/30 frames. Please ensure stable camera and try again.`)
+      resetScan()
+      return
+    }
+
+    console.log(`✅ Captured ${capturedFramesRef.current.length} frames - sending to rapid-handler for liveness filtering`)
+
+    // === SEND TO RAPID-HANDLER (it will select best 10) ===
+    await sendToVerification()
   }
 
-  // === CAPTURE & SEND ===
-  const captureAndSendFrame = async () => {
+  // === SEND ALL FRAMES TO RAPID-HANDLER ===
+  const sendToVerification = async () => {
     try {
-      const video = videoRef.current
-      if (!video || !studentUuid) {
-        throw new Error("Missing video or student UUID")
-      }
-
-      setVerificationStatus("Capturing image...")
-      setProgress(20)
-
-      // Capture frame from video
-      const canvas = document.createElement("canvas")
-      canvas.width = video.videoWidth
-      canvas.height = video.videoHeight
-      const ctx = canvas.getContext("2d")
-      
-      if (!ctx) {
-        throw new Error("Canvas context failed")
-      }
-
-      ctx.drawImage(video, 0, 0)
-      const base64 = canvas.toDataURL("image/jpeg", 0.8).split(",")[1]
-
-      console.log("Image captured:", {
-        width: canvas.width,
-        height: canvas.height,
-        size: base64.length
-      })
-
-      setProgress(40)
+      setProgress(60)
       setVerificationStatus("Checking liveness...")
 
       const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL
@@ -214,21 +246,22 @@ export default function FacialScan({ onComplete, onBack, sessionData, sessionId 
         throw new Error("Supabase configuration missing")
       }
 
-      // === FIXED: Send session_id, not access_code ===
       const body = {
         student_uuid: studentUuid,
-        image: base64,
-        session_id: sessionId  // ← CORRECT FIELD
+        images: capturedFramesRef.current, // ← Send array of frames
+        session_id: sessionId
       }
 
       console.log("Sending to rapid-handler:", {
         student_uuid: studentUuid,
         session_id: sessionId,
-        image_size: base64.length,
+        frame_count: capturedFramesRef.current.length,
+        total_size: capturedFramesRef.current.reduce((sum, img) => sum + img.length, 0),
+        note: "rapid-handler will filter by liveness and select best 10"
       })
 
-      setProgress(60)
-      setVerificationStatus("Verifying face...")
+      setProgress(70)
+      setVerificationStatus("Verifying identity...")
 
       const res = await fetch(`${supabaseUrl}/functions/v1/rapid-handler`, {
         method: "POST",
@@ -239,41 +272,51 @@ export default function FacialScan({ onComplete, onBack, sessionData, sessionId 
         body: JSON.stringify(body),
       })
 
-      if (!res.ok) {
-        const errorText = await res.text()
-        console.error("Server error:", errorText)
-        throw new Error(`Server error: ${errorText}`)
-      }
-
       const data = await res.json()
       console.log("rapid-handler response:", data)
 
-      setProgress(80)
+      setProgress(85)
 
-      // === CHECK VERIFICATION RESULT ===
-      if (data.error) {
-        throw new Error(data.details || data.error)
+      // === HANDLE ERRORS ===
+      if (!res.ok || data.error) {
+        const errorMsg = data.error || data.details || "Verification failed"
+        
+        // Provide helpful feedback
+        if (errorMsg.includes("Liveness failed")) {
+          throw new Error(
+            `Liveness check failed (${data.valid_frames || 0}/${data.required || 5} frames passed).\n\n` +
+            `Tips:\n• Ensure good lighting\n• Look directly at camera\n• Hold steady\n• Remove glasses if possible`
+          )
+        } else if (errorMsg.includes("not enrolled")) {
+          throw new Error("Your face is not enrolled. Please complete enrollment first.")
+        } else if (errorMsg.includes("session")) {
+          throw new Error("Invalid or expired session. Please check your code.")
+        } else {
+          throw new Error(errorMsg)
+        }
       }
 
-      const verified = data.siamese?.verified || false
-      const metrics = data.siamese?.metrics || {}
-      const maxSimilarity = metrics.max_similarity || 0
-      const avgSimilarity = metrics.avg_similarity || 0
-      const matchCount = metrics.match_count || 0
-      const totalComparisons = metrics.total_comparisons || 0
+      setProgress(95)
+
+      // === CHECK VERIFICATION RESULT ===
+      const verified = data.verified || false
+      const siamese = data.siamese || {}
+      const confidence = siamese.confidence || 0
+      const liveness = data.liveness || {}
 
       console.log("Verification result:", {
         verified,
-        maxSimilarity,
-        avgSimilarity,
-        matchCount,
-        totalComparisons
+        confidence,
+        frames_processed: siamese.frames_processed,
+        negatives_used: siamese.negatives_used,
+        liveness_passed: liveness.passed,
+        liveness_total: liveness.total
       })
 
       setProgress(100)
 
-      if (verified && maxSimilarity >= 0.8) {
-        setVerificationStatus("Verification successful!")
+      if (verified) {
+        setVerificationStatus("✓ Verification successful!")
         
         setTimeout(() => {
           stopCamera()
@@ -285,51 +328,43 @@ export default function FacialScan({ onComplete, onBack, sessionData, sessionId 
             sessionUuid: sessionData?.id,
             unitId: sessionData?.unit_id,
             unitName: sessionData?.unit?.name,
-            confidence: maxSimilarity,
-            avgConfidence: avgSimilarity,
-            matchCount: matchCount,
-            totalComparisons: totalComparisons,
-            livenessScore: data.liveness?.liveness_score || 0,
+            confidence: confidence,
+            framesProcessed: siamese.frames_processed,
+            negativesUsed: siamese.negatives_used,
+            livenessScore: `${liveness.passed}/${liveness.total}`,
+            attendanceId: siamese.attendance_id,
             timestamp: new Date(),
           })
-        }, 500)
+        }, 1000)
       } else {
         const failureMessage = 
-          `Face verification failed:\n\n` +
-          `Max Similarity: ${(maxSimilarity * 100).toFixed(1)}%\n` +
-          `Average Similarity: ${(avgSimilarity * 100).toFixed(1)}%\n` +
-          `Matches: ${matchCount}/${totalComparisons}\n\n` +
+          `Face verification failed.\n\n` +
+          `Confidence: ${typeof confidence === 'number' ? (confidence * 100).toFixed(1) + '%' : confidence}\n` +
+          `Frames processed: ${siamese.frames_processed || 0}\n` +
+          `Liveness: ${liveness.passed}/${liveness.total}\n\n` +
           `Please ensure:\n` +
-          `• Good lighting\n` +
-          `• Face clearly visible\n` +
-          `• No obstructions\n` +
-          `• You are the enrolled student`
+          `• Good lighting on your face\n` +
+          `• Face clearly visible (no masks/hats)\n` +
+          `• You are the enrolled student\n` +
+          `• Camera is stable`
 
         alert(failureMessage)
-        setScanning(false)
-        setProgress(0)
-        setVerificationStatus(null)
+        resetScan()
       }
     } catch (err: any) {
-      console.error("Verification failed:", err)
-      
-      let errorMessage = "Verification failed: "
-      
-      if (err.message.includes("Liveness")) {
-        errorMessage += "Liveness check failed. Please ensure good lighting and try again."
-      } else if (err.message.includes("not enrolled")) {
-        errorMessage += "Face not enrolled. Please complete enrollment first."
-      } else if (err.message.includes("session")) {
-        errorMessage += "Invalid session. Please check your code and try again."
-      } else {
-        errorMessage += err.message || "Unknown error occurred"
-      }
-      
-      alert(errorMessage)
-      setScanning(false)
-      setProgress(0)
-      setVerificationStatus(null)
+      console.error("Verification error:", err)
+      alert(err.message || "Verification failed. Please try again.")
+      resetScan()
     }
+  }
+
+  // === RESET SCAN STATE ===
+  const resetScan = () => {
+    setScanning(false)
+    setProgress(0)
+    setCaptureCount(0)
+    setVerificationStatus(null)
+    capturedFramesRef.current = []
   }
 
   // === CLEANUP ON UNMOUNT ===
@@ -343,8 +378,7 @@ export default function FacialScan({ onComplete, onBack, sessionData, sessionId 
     setStudentUuid(null)
     setStudentId("")
     setLookupError(null)
-    setProgress(0)
-    setVerificationStatus(null)
+    resetScan()
     stopCamera()
   }
 
@@ -433,14 +467,30 @@ export default function FacialScan({ onComplete, onBack, sessionData, sessionId 
                   </div>
                 )}
                 
+                {/* Capture indicator */}
+                {scanning && captureCount > 0 && (
+                  <div className="absolute top-4 right-4 bg-green-500 text-white px-3 py-1 rounded-full text-sm font-semibold flex items-center gap-2 shadow-lg">
+                    <Camera className="h-4 w-4" />
+                    {captureCount}/{TOTAL_FRAMES}
+                  </div>
+                )}
+
+                {/* Scanning animation */}
                 {scanning && (
-                  <div className="absolute inset-0 bg-gradient-to-b from-transparent via-accent/20 to-transparent animate-pulse" />
+                  <div className="absolute inset-0 border-4 border-green-500 animate-pulse pointer-events-none" />
                 )}
 
                 {/* Progress overlay */}
                 {scanning && verificationStatus && (
-                  <div className="absolute bottom-0 left-0 right-0 bg-black/70 p-4">
-                    <p className="text-white text-sm mb-2 text-center">{verificationStatus}</p>
+                  <div className="absolute bottom-0 left-0 right-0 bg-black/80 p-4">
+                    <div className="flex items-center gap-2 mb-2">
+                      {progress < 100 ? (
+                        <Loader2 className="h-4 w-4 text-white animate-spin" />
+                      ) : (
+                        <CheckCircle2 className="h-4 w-4 text-green-500" />
+                      )}
+                      <p className="text-white text-sm flex-1">{verificationStatus}</p>
+                    </div>
                     <div className="w-full bg-gray-700 rounded-full h-2 overflow-hidden">
                       <div 
                         className="bg-green-500 h-full transition-all duration-300" 
@@ -467,9 +517,10 @@ export default function FacialScan({ onComplete, onBack, sessionData, sessionId 
                   )}
                   
                   {cameraReady && !scanning && (
-                    <p className="text-xs text-green-600 font-medium">
-                      Camera ready
-                    </p>
+                    <div className="flex items-center justify-center gap-2 text-xs text-green-600 font-medium">
+                      <CheckCircle2 className="h-4 w-4" />
+                      Camera ready - Will capture {TOTAL_FRAMES} frames (system selects best 10)
+                    </div>
                   )}
                 </div>
 
@@ -488,6 +539,7 @@ export default function FacialScan({ onComplete, onBack, sessionData, sessionId 
                       disabled={!cameraReady}
                       className="flex-1"
                     >
+                      <Camera className="mr-2 h-4 w-4" />
                       Start Scan
                     </Button>
                   ) : (
