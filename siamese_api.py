@@ -573,6 +573,183 @@ async def predict(file1: UploadFile = File(...), file2: UploadFile = File(...)):
         print(f"❌ Prediction error: {e}")
         traceback.print_exc()
         raise HTTPException(status_code=500, detail=f"Prediction failed: {str(e)}")
+    
+
+# Add this to your main.py (after the /predict endpoint)
+
+@app.post("/batch-verify")
+async def batch_verify(
+    anchors: list[UploadFile] = File(...),
+    negatives: list[UploadFile] = File(...)
+):
+    """
+    Batch verification: Compare multiple anchor images against multiple negative images
+    
+    Args:
+        anchors: List of live capture images (2-10 images)
+        negatives: List of enrolled reference images (15+ images)
+        
+    Returns:
+        JSON with verification decision and detailed metrics
+    """
+    
+    # Check model status
+    if model_loading:
+        elapsed = time.time() - load_start_time if load_start_time else 0
+        raise HTTPException(
+            status_code=503,
+            detail={
+                "error": "Model still loading",
+                "loading_time_seconds": round(elapsed, 1),
+                "message": "Please wait and check /health"
+            }
+        )
+    
+    if model is None:
+        error_msg = f"Model failed: {model_error}" if model_error else "Model not loaded"
+        raise HTTPException(status_code=503, detail=error_msg)
+    
+    try:
+        print("\n" + "="*60)
+        print("🔍 BATCH VERIFICATION REQUEST")
+        print("="*60)
+        
+        # Validate counts
+        if len(anchors) < 1:
+            raise HTTPException(status_code=400, detail="Need at least 1 anchor image")
+        if len(negatives) < 15:
+            raise HTTPException(status_code=400, detail=f"Need at least 15 negative images (got {len(negatives)})")
+        
+        print(f"📥 Anchors: {len(anchors)}, Negatives: {len(negatives)}")
+        
+        # Preprocess all anchor images
+        print("🔧 Preprocessing anchor images...")
+        anchor_arrays = []
+        for i, anchor in enumerate(anchors):
+            try:
+                img_bytes = await anchor.read()
+                img_array = preprocess_image(img_bytes)
+                anchor_arrays.append(img_array)
+                print(f"  ✅ Anchor {i+1}/{len(anchors)}")
+            except Exception as e:
+                print(f"  ⚠️ Anchor {i+1} failed: {e}")
+                continue
+        
+        if len(anchor_arrays) == 0:
+            raise HTTPException(status_code=400, detail="No valid anchor images")
+        
+        # Preprocess all negative images
+        print("🔧 Preprocessing negative images...")
+        negative_arrays = []
+        for i, negative in enumerate(negatives):
+            try:
+                img_bytes = await negative.read()
+                img_array = preprocess_image(img_bytes)
+                negative_arrays.append(img_array)
+                if (i + 1) % 5 == 0:
+                    print(f"  ✅ Negatives {i+1}/{len(negatives)}")
+            except Exception as e:
+                print(f"  ⚠️ Negative {i+1} failed: {e}")
+                continue
+        
+        if len(negative_arrays) < 15:
+            raise HTTPException(
+                status_code=400, 
+                detail=f"Not enough valid negative images ({len(negative_arrays)}/15)"
+            )
+        
+        print(f"✅ Preprocessed: {len(anchor_arrays)} anchors, {len(negative_arrays)} negatives")
+        
+        # === BATCH PREDICTION: All anchors vs All negatives ===
+        print("🤖 Running batch predictions...")
+        
+        all_scores = []
+        total_comparisons = 0
+        
+        for i, anchor in enumerate(anchor_arrays):
+            anchor_batch = np.expand_dims(anchor, axis=0)
+            
+            # Compare this anchor against all negatives
+            for j, negative in enumerate(negative_arrays):
+                negative_batch = np.expand_dims(negative, axis=0)
+                
+                # Predict similarity
+                prediction = model.predict([anchor_batch, negative_batch], verbose=0)
+                score = float(prediction[0][0])
+                all_scores.append(score)
+                total_comparisons += 1
+        
+        print(f"✅ Completed {total_comparisons} comparisons")
+        
+        # === CALCULATE METRICS ===
+        if len(all_scores) == 0:
+            raise HTTPException(status_code=500, detail="No predictions generated")
+        
+        all_scores_array = np.array(all_scores)
+        max_similarity = float(np.max(all_scores_array))
+        avg_similarity = float(np.mean(all_scores_array))
+        min_similarity = float(np.min(all_scores_array))
+        std_similarity = float(np.std(all_scores_array))
+        
+        # Count matches above threshold
+        THRESHOLD = 0.8
+        matches_above_threshold = int(np.sum(all_scores_array >= THRESHOLD))
+        
+        # Verification decision
+        verified = max_similarity >= THRESHOLD
+        
+        print(f"📊 Results:")
+        print(f"  Max: {max_similarity:.4f}")
+        print(f"  Avg: {avg_similarity:.4f}")
+        print(f"  Min: {min_similarity:.4f}")
+        print(f"  Matches ≥{THRESHOLD}: {matches_above_threshold}/{total_comparisons}")
+        print(f"  Decision: {'✅ VERIFIED' if verified else '❌ REJECTED'}")
+        
+        # Determine confidence level
+        if max_similarity >= 0.95:
+            confidence = "very_high"
+        elif max_similarity >= 0.85:
+            confidence = "high"
+        elif max_similarity >= 0.75:
+            confidence = "medium"
+        else:
+            confidence = "low"
+        
+        result = {
+            "verified": verified,
+            "confidence": max_similarity,
+            "max_similarity": max_similarity,
+            "avg_similarity": avg_similarity,
+            "min_similarity": min_similarity,
+            "std_similarity": std_similarity,
+            "match_count": matches_above_threshold,
+            "total_comparisons": total_comparisons,
+            "threshold": THRESHOLD,
+            "confidence_level": confidence,
+            "anchors_processed": len(anchor_arrays),
+            "negatives_processed": len(negative_arrays),
+            "message": f"{'Verification successful' if verified else 'Verification failed'} (max: {max_similarity:.4f})",
+            "all_scores_summary": {
+                "percentile_95": float(np.percentile(all_scores_array, 95)),
+                "percentile_75": float(np.percentile(all_scores_array, 75)),
+                "percentile_50": float(np.percentile(all_scores_array, 50)),
+                "percentile_25": float(np.percentile(all_scores_array, 25))
+            }
+        }
+        
+        print("="*60 + "\n")
+        
+        return JSONResponse(result)
+    
+    except ValueError as e:
+        print(f"❌ Validation error: {e}")
+        raise HTTPException(status_code=400, detail=str(e))
+    except Exception as e:
+        print(f"❌ Batch verification error: {e}")
+        traceback.print_exc()
+        raise HTTPException(status_code=500, detail=f"Batch verification failed: {str(e)}")
+
+
 
 @app.get("/test")
 def test_endpoint():
