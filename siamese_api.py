@@ -585,6 +585,12 @@ async def batch_verify(
     """
     Batch verification: Compare multiple anchor images against multiple negative images
     
+    Stricter verification logic:
+    - Higher threshold (0.90 instead of 0.80)
+    - Requires multiple consistent high matches (not just one)
+    - Statistical validation to detect outliers
+    - Checks match distribution patterns
+    
     Args:
         anchors: List of live capture images (2-10 images)
         negatives: List of enrolled reference images (15+ images)
@@ -611,7 +617,7 @@ async def batch_verify(
     
     try:
         print("\n" + "="*60)
-        print("🔍 BATCH VERIFICATION REQUEST")
+        print("🔍 BATCH VERIFICATION REQUEST (STRICT MODE)")
         print("="*60)
         
         # Validate counts
@@ -664,10 +670,12 @@ async def batch_verify(
         print("🤖 Running batch predictions...")
         
         all_scores = []
+        per_anchor_max_scores = []  # Track best match for each anchor
         total_comparisons = 0
         
         for i, anchor in enumerate(anchor_arrays):
             anchor_batch = np.expand_dims(anchor, axis=0)
+            anchor_scores = []
             
             # Compare this anchor against all negatives
             for j, negative in enumerate(negative_arrays):
@@ -677,7 +685,11 @@ async def batch_verify(
                 prediction = model.predict([anchor_batch, negative_batch], verbose=0)
                 score = float(prediction[0][0])
                 all_scores.append(score)
+                anchor_scores.append(score)
                 total_comparisons += 1
+            
+            # Track the best score for this anchor
+            per_anchor_max_scores.append(max(anchor_scores))
         
         print(f"✅ Completed {total_comparisons} comparisons")
         
@@ -686,34 +698,97 @@ async def batch_verify(
             raise HTTPException(status_code=500, detail="No predictions generated")
         
         all_scores_array = np.array(all_scores)
+        per_anchor_max_array = np.array(per_anchor_max_scores)
+        
         max_similarity = float(np.max(all_scores_array))
         avg_similarity = float(np.mean(all_scores_array))
         min_similarity = float(np.min(all_scores_array))
         std_similarity = float(np.std(all_scores_array))
         
-        # Count matches above threshold
-        THRESHOLD = 0.8
-        matches_above_threshold = int(np.sum(all_scores_array >= THRESHOLD))
+        # === STRICT VERIFICATION LOGIC ===
         
-        # Verification decision
-        verified = max_similarity >= THRESHOLD
+        # Stricter thresholds
+        PRIMARY_THRESHOLD = 0.90    # Much higher threshold
+        SECONDARY_THRESHOLD = 0.85  # For consistency check
+        MIN_MATCH_RATIO = 0.3       # At least 30% of comparisons should be decent
         
-        print(f"📊 Results:")
-        print(f"  Max: {max_similarity:.4f}")
-        print(f"  Avg: {avg_similarity:.4f}")
-        print(f"  Min: {min_similarity:.4f}")
-        print(f"  Matches ≥{THRESHOLD}: {matches_above_threshold}/{total_comparisons}")
-        print(f"  Decision: {'✅ VERIFIED' if verified else '❌ REJECTED'}")
+        # 1. Count matches above thresholds
+        matches_above_primary = int(np.sum(all_scores_array >= PRIMARY_THRESHOLD))
+        matches_above_secondary = int(np.sum(all_scores_array >= SECONDARY_THRESHOLD))
+        
+        # 2. Check if MULTIPLE anchors match consistently (not just one outlier)
+        anchors_with_good_match = int(np.sum(per_anchor_max_array >= PRIMARY_THRESHOLD))
+        
+        # 3. Calculate match ratio (what % of comparisons are decent?)
+        match_ratio = matches_above_secondary / total_comparisons
+        
+        # 4. Statistical outlier detection: Is max score an outlier?
+        # If max score is more than 3 std deviations above mean, it's suspicious
+        z_score = (max_similarity - avg_similarity) / (std_similarity + 1e-10)
+        is_outlier = z_score > 3.0
+        
+        # 5. Distribution check: Good matches should be clustered, not isolated
+        top_5_percent_threshold = np.percentile(all_scores_array, 95)
+        
+        print(f"📊 Strict Analysis:")
+        print(f"  Max similarity: {max_similarity:.4f}")
+        print(f"  Avg similarity: {avg_similarity:.4f}")
+        print(f"  Std similarity: {std_similarity:.4f}")
+        print(f"  Matches ≥{PRIMARY_THRESHOLD}: {matches_above_primary}/{total_comparisons}")
+        print(f"  Matches ≥{SECONDARY_THRESHOLD}: {matches_above_secondary}/{total_comparisons}")
+        print(f"  Anchors with good match: {anchors_with_good_match}/{len(anchor_arrays)}")
+        print(f"  Match ratio: {match_ratio:.2%}")
+        print(f"  Z-score (outlier test): {z_score:.2f} {'⚠️ OUTLIER' if is_outlier else '✓'}")
+        print(f"  95th percentile: {top_5_percent_threshold:.4f}")
+        
+        # === VERIFICATION DECISION (STRICT) ===
+        verification_checks = {
+            "max_score_check": max_similarity >= PRIMARY_THRESHOLD,
+            "multiple_matches_check": matches_above_primary >= 2,  # At least 2 strong matches
+            "consistency_check": anchors_with_good_match >= max(1, len(anchor_arrays) // 2),  # At least half anchors match
+            "ratio_check": match_ratio >= MIN_MATCH_RATIO,
+            "not_outlier_check": not is_outlier,
+            "distribution_check": top_5_percent_threshold >= SECONDARY_THRESHOLD
+        }
+        
+        # ALL checks must pass for verification
+        # verified = all(verification_checks.values())
+        
+        # Alternative: Require at least 5 out of 6 checks (more lenient)
+        verified = sum(verification_checks.values()) >= 
+        
+        print(f"\n🔒 Verification Checks:")
+        for check_name, passed in verification_checks.items():
+            status = "✅ PASS" if passed else "❌ FAIL"
+            print(f"  {status} - {check_name}")
+        
+        print(f"\n  Final Decision: {'✅ VERIFIED' if verified else '❌ REJECTED'}")
         
         # Determine confidence level
-        if max_similarity >= 0.95:
+        if max_similarity >= 0.95 and verified:
             confidence = "very_high"
-        elif max_similarity >= 0.85:
+        elif max_similarity >= 0.90 and verified:
             confidence = "high"
-        elif max_similarity >= 0.75:
+        elif max_similarity >= 0.85:
             confidence = "medium"
         else:
             confidence = "low"
+        
+        # Detailed reason for rejection
+        rejection_reasons = []
+        if not verified:
+            if not verification_checks["max_score_check"]:
+                rejection_reasons.append(f"Max score too low ({max_similarity:.4f} < {PRIMARY_THRESHOLD})")
+            if not verification_checks["multiple_matches_check"]:
+                rejection_reasons.append(f"Too few strong matches ({matches_above_primary} < 2)")
+            if not verification_checks["consistency_check"]:
+                rejection_reasons.append(f"Inconsistent anchor matches ({anchors_with_good_match}/{len(anchor_arrays)})")
+            if not verification_checks["ratio_check"]:
+                rejection_reasons.append(f"Low overall match ratio ({match_ratio:.1%} < {MIN_MATCH_RATIO:.0%})")
+            if not verification_checks["not_outlier_check"]:
+                rejection_reasons.append(f"Max score is outlier (z-score: {z_score:.2f})")
+            if not verification_checks["distribution_check"]:
+                rejection_reasons.append(f"Poor score distribution (95th percentile: {top_5_percent_threshold:.4f})")
         
         result = {
             "verified": verified,
@@ -722,19 +797,28 @@ async def batch_verify(
             "avg_similarity": avg_similarity,
             "min_similarity": min_similarity,
             "std_similarity": std_similarity,
-            "match_count": matches_above_threshold,
+            "z_score": z_score,
+            "is_outlier": is_outlier,
+            "match_count_primary": matches_above_primary,
+            "match_count_secondary": matches_above_secondary,
+            "match_ratio": match_ratio,
+            "anchors_with_good_match": anchors_with_good_match,
             "total_comparisons": total_comparisons,
-            "threshold": THRESHOLD,
+            "primary_threshold": PRIMARY_THRESHOLD,
+            "secondary_threshold": SECONDARY_THRESHOLD,
             "confidence_level": confidence,
             "anchors_processed": len(anchor_arrays),
             "negatives_processed": len(negative_arrays),
-            "message": f"{'Verification successful' if verified else 'Verification failed'} (max: {max_similarity:.4f})",
+            "verification_checks": verification_checks,
+            "rejection_reasons": rejection_reasons,
+            "message": f"{'Verification successful' if verified else 'Verification failed: ' + '; '.join(rejection_reasons)}",
             "all_scores_summary": {
                 "percentile_95": float(np.percentile(all_scores_array, 95)),
                 "percentile_75": float(np.percentile(all_scores_array, 75)),
                 "percentile_50": float(np.percentile(all_scores_array, 50)),
                 "percentile_25": float(np.percentile(all_scores_array, 25))
-            }
+            },
+            "per_anchor_max_scores": [float(s) for s in per_anchor_max_scores]
         }
         
         print("="*60 + "\n")
@@ -748,8 +832,7 @@ async def batch_verify(
         print(f"❌ Batch verification error: {e}")
         traceback.print_exc()
         raise HTTPException(status_code=500, detail=f"Batch verification failed: {str(e)}")
-
-
+    
 
 @app.get("/test")
 def test_endpoint():

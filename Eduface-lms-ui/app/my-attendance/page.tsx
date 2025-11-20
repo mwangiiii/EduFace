@@ -10,195 +10,188 @@ import { useState, useEffect } from "react"
 import { supabase } from "@/lib/supabaseClient"
 
 export default function MyAttendancePage() {
-  const [userProfile, setUserProfile] = useState<{ first_name: string; last_name: string; role: string; id: string } | null>(null)
+  const [userProfile, setUserProfile] = useState<any>(null)
+  const [studentId, setStudentId] = useState<string | null>(null)
+
   const [presentThisWeek, setPresentThisWeek] = useState(0)
+  const [lateThisWeek, setLateThisWeek] = useState(0)
   const [absentThisWeek, setAbsentThisWeek] = useState(0)
   const [attendanceRate, setAttendanceRate] = useState("0%")
   const [weeklyData, setWeeklyData] = useState<{ date: string; present: number }[]>([])
-  const [recentAttendance, setRecentAttendance] = useState<{ date: string; status: string; time: string; confidence: string }[]>([])
+  const [recentAttendance, setRecentAttendance] = useState<any[]>([])
+
   const [loading, setLoading] = useState(true)
   const [statsLoading, setStatsLoading] = useState(false)
 
+  // Fetch authenticated user → profile → student_id
   useEffect(() => {
-    const fetchUserProfile = async () => {
+    const fetchUserAndStudent = async () => {
       try {
-        // Get the current authenticated user
-        const { data: { user }, error: authError } = await supabase.auth.getUser()
-        if (authError || !user) {
-          console.error('Auth error:', authError)
-          return
-        }
+        const { data: { user } } = await supabase.auth.getUser()
+        if (!user) return
 
-        // Fetch profile from custom 'users' table
-        const { data: profile, error: profileError } = await supabase
+        const { data: profile } = await supabase
           .from('users')
-          .select('first_name, last_name, role, id')
+          .select('id, first_name, last_name, role')
           .eq('id', user.id)
           .single()
 
-        if (profileError || !profile) {
-          console.error('Profile fetch error:', profileError)
+        if (!profile || profile.role !== 'student') {
+          setUserProfile(profile || null)
+          setLoading(false)
           return
         }
 
+        const { data: student } = await supabase
+          .from('students')
+          .select('id')
+          .eq('user_id', user.id)
+          .single()
+
         setUserProfile(profile)
-      } catch (error) {
-        console.error('Unexpected error:', error)
+        setStudentId(student?.id || null)
+      } catch (err) {
+        console.error("Error fetching user/student:", err)
       } finally {
         setLoading(false)
       }
     }
 
-    fetchUserProfile()
+    fetchUserAndStudent()
   }, [])
 
+  // Fetch attendance only when we have the correct studentId
   useEffect(() => {
-    if (!userProfile || userProfile.role !== 'student') return
+    if (!studentId || !userProfile || userProfile.role !== 'student') return
 
-    const fetchAttendanceStats = async () => {
+    const fetchAttendance = async () => {
       setStatsLoading(true)
       try {
-        const userId = userProfile.id
         const now = new Date()
         const startOfWeek = new Date(now)
         const dayOfWeek = startOfWeek.getDay()
-        startOfWeek.setDate(startOfWeek.getDate() - (dayOfWeek === 0 ? 6 : dayOfWeek - 1)) // Monday
+        startOfWeek.setDate(startOfWeek.getDate() - (dayOfWeek === 0 ? 6 : dayOfWeek - 1))
+        startOfWeek.setHours(0, 0, 0, 0)
+
         const startIso = startOfWeek.toISOString()
         const nowIso = now.toISOString()
 
-        // Fetch enrolled course IDs
+        // 1. Enrolled courses
         const { data: enrollments } = await supabase
           .from('enrollments')
           .select('course_id')
-          .eq('student_id', userId)
+          .eq('student_id', studentId)
 
         const courseIds = enrollments?.map(e => e.course_id) || []
         if (courseIds.length === 0) {
-          // No enrollments, set defaults
-          setPresentThisWeek(0)
-          setAbsentThisWeek(0)
-          setAttendanceRate("0%")
-          setWeeklyData([])
-          setRecentAttendance([])
+          setPresentThisWeek(0); setLateThisWeek(0); setAbsentThisWeek(0); setAttendanceRate("0%")
+          setWeeklyData([]); setRecentAttendance([])
           return
         }
 
-        // Fetch sessions this week
-        const { data: sessions, error: sessionsError } = await supabase
+        // 2. Completed sessions this week
+        const { data: sessions } = await supabase
           .from('attendance_sessions')
-          .select('id, date_time, course_id')
+          .select('id, date_time')
           .in('course_id', courseIds)
+          .eq('status', 'completed')
           .gte('date_time', startIso)
           .lte('date_time', nowIso)
-          .eq('status', 'completed') // Only completed sessions
           .order('date_time', { ascending: false })
 
-        if (sessionsError) {
-          console.error('Sessions fetch error:', sessionsError)
+        if (!sessions || sessions.length === 0) {
+          setPresentThisWeek(0); setLateThisWeek(0); setAbsentThisWeek(0); setAttendanceRate("0%")
+          setWeeklyData([]); setRecentAttendance([])
           return
         }
 
         const sessionIds = sessions.map(s => s.id)
-        const totalSessions = sessions.length
 
-        // Fetch records for these sessions
-        const { data: records, error: recordsError } = await supabase
+        // 3. Student's records
+        const { data: records } = await supabase
           .from('attendance_records')
           .select('session_id, status, timestamp, confidence_score')
-          .eq('student_id', userId)
+          .eq('student_id', studentId)
           .in('session_id', sessionIds)
 
-        if (recordsError) {
-          console.error('Records fetch error:', recordsError)
-          return
-        }
+        const recordMap = new Map(records?.map(r => [r.session_id, r]) || [])
 
-        const recordMap = new Map(records.map(r => [r.session_id, r]))
+        // Stats calculation
+        let present = 0
+        let late = 0
+        const dailyPresent: { [date: string]: number } = {}
 
-        // Calculate weekly stats
-        let totalPresent = 0
-        const dailyPresent: { [key: string]: number } = {}
-        sessions.forEach(s => {
-          const dateStr = new Date(s.date_time).toISOString().split('T')[0]
-          if (!dailyPresent[dateStr]) dailyPresent[dateStr] = 0
-          const rec = recordMap.get(s.id)
-          if (rec && rec.status === 'present') {
-            totalPresent++
-            dailyPresent[dateStr]++
+        sessions.forEach(session => {
+          const dateStr = new Date(session.date_time).toISOString().split('T')[0]
+          dailyPresent[dateStr] = (dailyPresent[dateStr] || 0)
+
+          const rec = recordMap.get(session.id)
+          if (rec) {
+            if (rec.status === 'present') {
+              present++
+              dailyPresent[dateStr]++
+            } else if (rec.status === 'late') {
+              late++
+            }
           }
         })
 
-        const totalAbsent = totalSessions - totalPresent
-        const rate = totalSessions > 0 ? Math.round((totalPresent / totalSessions) * 100) : 0
+        const absent = sessions.length - present - late
+        const rate = sessions.length > 0 ? Math.round(((present + late) / sessions.length) * 100) : 0
 
-        setPresentThisWeek(totalPresent)
-        setAbsentThisWeek(totalAbsent)
+        setPresentThisWeek(present)
+        setLateThisWeek(late)
+        setAbsentThisWeek(absent)
         setAttendanceRate(`${rate}%`)
 
-        // Build weekly trend data
-        const trendData: { date: string; present: number }[] = []
-        let currentDay = new Date(startOfWeek)
-        while (currentDay <= now) {
-          const dateStr = currentDay.toISOString().split('T')[0]
-          const present = dailyPresent[dateStr] || 0
-          const dayShort = currentDay.toLocaleDateString('en-US', { weekday: 'short' })
-          trendData.push({ date: dayShort, present })
-          currentDay.setDate(currentDay.getDate() + 1)
+        // Weekly trend — FIXED: renamed variable to avoid conflict
+        const trend: { date: string; present: number }[] = []
+        let currentDate = new Date(startOfWeek)  // ← renamed from "day" to "currentDate"
+        while (currentDate <= now) {
+          const dateStr = currentDate.toISOString().split('T')[0]
+          const short = currentDate.toLocaleDateString('en-US', { weekday: 'short' })
+          trend.push({ date: short, present: dailyPresent[dateStr] || 0 })
+          currentDate.setDate(currentDate.getDate() + 1)
         }
-        setWeeklyData(trendData)
+        setWeeklyData(trend)
 
-        // Recent attendance (last 5 sessions)
-        const recentSessions = sessions.slice(0, 5)
-        const recentList: { date: string; status: string; time: string; confidence: string }[] = []
-        recentSessions.forEach(session => {
+        // Recent 5 sessions
+        const recent = sessions.slice(0, 5).map(session => {
           const rec = recordMap.get(session.id)
           const date = new Date(session.date_time).toISOString().split('T')[0]
-          let status = 'Absent'
-          let time = '—'
-          let confidence = '—'
-          if (rec) {
-            status = rec.status.charAt(0).toUpperCase() + rec.status.slice(1)
-            time = formatTime(rec.timestamp)
-            confidence = `${(rec.confidence_score * 100).toFixed(1)}%`
-          } else {
-            status = 'Absent'
+          if (!rec) {
+            return { date, status: "Absent", time: "—", confidence: "—" }
           }
-          recentList.push({ date, status, time, confidence })
+          return {
+            date,
+            status: rec.status.charAt(0).toUpperCase() + rec.status.slice(1),
+            time: new Date(rec.timestamp).toLocaleTimeString('en-US', { hour: 'numeric', minute: '2-digit' }),
+            confidence: `${(rec.confidence_score * 100).toFixed(1)}%`
+          }
         })
-        setRecentAttendance(recentList)
-      } catch (error) {
-        console.error('Unexpected error fetching attendance stats:', error)
+        setRecentAttendance(recent)
+
+      } catch (err) {
+        console.error("Error fetching attendance:", err)
       } finally {
         setStatsLoading(false)
       }
     }
 
-    fetchAttendanceStats()
-  }, [userProfile])
+    fetchAttendance()
+  }, [studentId, userProfile])
 
-  const formatTime = (isoStr: string) => {
-    return new Date(isoStr).toLocaleTimeString('en-US', { hour: 'numeric', minute: '2-digit' })
-  }
-
-  if (loading) {
-    return <div className="flex items-center justify-center min-h-screen">Loading...</div>
-  }
-
-  if (!userProfile) {
-    return <div className="flex items-center justify-center min-h-screen">No profile found. Please log in again.</div>
-  }
-
-  const role = userProfile.role
-  if (role !== 'student') {
+  // Loading & access control
+  if (loading) return <div className="flex items-center justify-center min-h-screen">Loading...</div>
+  if (!userProfile) return <div className="flex items-center justify-center min-h-screen">Please log in.</div>
+  if (userProfile.role !== 'student') {
     return (
       <div className="flex">
         <Sidebar />
         <div className="flex-1 pl-64">
           <Navbar />
-          <main className="pt-16 p-6">
-            <div className="text-center text-muted-foreground">
-              Attendance view is available for students only.
-            </div>
+          <main className="pt-16 p-6 text-center text-muted-foreground">
+            This page is only available to students.
           </main>
         </div>
       </div>
@@ -213,57 +206,61 @@ export default function MyAttendancePage() {
         <main className="pt-16 p-6">
           <div className="mb-6">
             <h1 className="text-3xl font-bold mb-2">My Attendance</h1>
-            <p className="text-muted-foreground">Your attendance records and statistics</p>
+            <p className="text-muted-foreground">Track your attendance across all courses</p>
           </div>
 
-          <div className="grid md:grid-cols-3 gap-4 mb-6">
+          {/* Stats Cards */}
+          <div className="grid md:grid-cols-4 gap-4 mb-6">
             <Card>
-              <CardContent className="pt-6">
-                <div className="text-center">
-                  <div className="text-3xl font-bold text-green-500">{statsLoading ? '...' : presentThisWeek}</div>
-                  <p className="text-sm text-muted-foreground">Present This Week</p>
-                </div>
+              <CardContent className="pt-6 text-center">
+                <div className="text-3xl font-bold text-green-600">{statsLoading ? '...' : presentThisWeek}</div>
+                <p className="text-sm text-muted-foreground">Present</p>
               </CardContent>
             </Card>
             <Card>
-              <CardContent className="pt-6">
-                <div className="text-center">
-                  <div className="text-3xl font-bold text-red-500">{statsLoading ? '...' : absentThisWeek}</div>
-                  <p className="text-sm text-muted-foreground">Absent This Week</p>
-                </div>
+              <CardContent className="pt-6 text-center">
+                <div className="text-3xl font-bold text-amber-600">{statsLoading ? '...' : lateThisWeek}</div>
+                <p className="text-sm text-muted-foreground">Late</p>
               </CardContent>
             </Card>
             <Card>
-              <CardContent className="pt-6">
-                <div className="text-center">
-                  <div className="text-3xl font-bold">{statsLoading ? '...' : attendanceRate}</div>
-                  <p className="text-sm text-muted-foreground">Attendance Rate</p>
-                </div>
+              <CardContent className="pt-6 text-center">
+                <div className="text-3xl font-bold text-red-600">{statsLoading ? '...' : absentThisWeek}</div>
+                <p className="text-sm text-muted-foreground">Absent</p>
+              </CardContent>
+            </Card>
+            <Card>
+              <CardContent className="pt-6 text-center">
+                <div className="text-3xl font-bold text-blue-600">{statsLoading ? '...' : attendanceRate}</div>
+                <p className="text-sm text-muted-foreground">Attendance Rate</p>
               </CardContent>
             </Card>
           </div>
 
+          {/* Weekly Trend */}
           <Card className="mb-6">
             <CardHeader>
               <CardTitle>Weekly Trend</CardTitle>
+              <CardDescription>Present sessions per day this week</CardDescription>
             </CardHeader>
             <CardContent>
-              <ResponsiveContainer width="100%" height={250}>
+              <ResponsiveContainer width="100%" height={280}>
                 <LineChart data={weeklyData}>
                   <CartesianGrid strokeDasharray="3 3" />
                   <XAxis dataKey="date" />
-                  <YAxis />
+                  <YAxis allowDecimals={false} />
                   <Tooltip />
-                  <Line type="monotone" dataKey="present" stroke="#3b82f6" name="Present" />
+                  <Line type="monotone" dataKey="present" stroke="#10b981" strokeWidth={3} dot={{ fill: '#10b981' }} />
                 </LineChart>
               </ResponsiveContainer>
             </CardContent>
           </Card>
 
+          {/* Recent Records */}
           <Card>
             <CardHeader>
-              <CardTitle>Recent Records</CardTitle>
-              <CardDescription>Your last 5 attendance entries</CardDescription>
+              <CardTitle>Recent Attendance</CardTitle>
+              <CardDescription>Last 5 class sessions</CardDescription>
             </CardHeader>
             <CardContent>
               <div className="overflow-x-auto">
@@ -277,32 +274,28 @@ export default function MyAttendancePage() {
                     </tr>
                   </thead>
                   <tbody>
-                    {recentAttendance.map((record, index) => {
-                      let variant = "default"
-                      let bgClass = "bg-green-500"
-                      if (record.status === "Absent") {
-                        variant = "destructive"
-                        bgClass = "bg-red-500"
-                      } else if (record.status === "Late") {
-                        variant = "secondary"
-                        bgClass = "bg-yellow-500"
-                      }
-                      return (
-                        <tr key={index} className="border-b hover:bg-muted/50">
-                          <td className="py-3 px-4 flex items-center gap-2">
-                            <Calendar className="h-4 w-4 text-muted-foreground" />
-                            {record.date}
-                          </td>
-                          <td className="py-3 px-4">
-                            <Badge variant={variant} className={bgClass}>
-                              {record.status}
-                            </Badge>
-                          </td>
-                          <td className="py-3 px-4">{record.time}</td>
-                          <td className="py-3 px-4">{record.confidence}</td>
-                        </tr>
-                      )
-                    })}
+                    {recentAttendance.map((r, i) => (
+                      <tr key={i} className="border-b hover:bg-muted/50">
+                        <td className="py-3 px-4 flex items-center gap-2">
+                          <Calendar className="h-4 w-4 text-muted-foreground" />
+                          {r.date}
+                        </td>
+                        <td className="py-3 px-4">
+                          <Badge
+                            variant={r.status === "Absent" ? "destructive" : r.status === "Late" ? "secondary" : "default"}
+                            className={
+                              r.status === "Present" ? "bg-green-600 text-white" :
+                              r.status === "Late" ? "bg-amber-600 text-white" :
+                              "bg-red-600 text-white"
+                            }
+                          >
+                            {r.status}
+                          </Badge>
+                        </td>
+                        <td className="py-3 px-4">{r.time}</td>
+                        <td className="py-3 px-4">{r.confidence}</td>
+                      </tr>
+                    ))}
                   </tbody>
                 </table>
               </div>
