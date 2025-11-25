@@ -31,8 +31,9 @@ export default function CodeEntry({ onSubmit, onLogout }: CodeEntryProps) {
   }, [])
 
   const handleCodeChange = (value: string) => {
-    const upper = value.toUpperCase().replace(/[^A-Z0-9]/g, "")
-    setCode(upper)
+    // No restrictions: Allow any characters, symbols, letters, numbers
+    // No uppercasing or filtering to match generated codes exactly
+    setCode(value)
     setError("")
     setSuccess(false)
   }
@@ -65,7 +66,7 @@ export default function CodeEntry({ onSubmit, onLogout }: CodeEntryProps) {
       // Step 1: Find session by access_code
       console.log("Looking up session with access_code:", accessCode)
       const sessionRes = await fetch(
-        `${supabaseUrl}/rest/v1/attendance_sessions?access_code=eq.${accessCode}&select=*`,
+        `${supabaseUrl}/rest/v1/attendance_sessions?access_code=eq.${encodeURIComponent(accessCode)}&select=*`,
         {
           headers: {
             apikey: anonKey,
@@ -130,11 +131,16 @@ export default function CodeEntry({ onSubmit, onLogout }: CodeEntryProps) {
 
     } catch (err: any) {
       console.error("Validation failed:", err)
-      setError(
-        err.message.includes("not found")
-          ? "Invalid session. Please check code and try again."
-          : "Network error. Please try again."
-      )
+      // FIXED: Better error mapping – catch "Invalid access code" specifically
+      if (err.message === "Invalid access code") {
+        setError("Invalid access code. Please check and try again.")
+      } else if (err.message.includes("not found") || err.message.includes("Unit not found")) {
+        setError("Invalid session. Please check code and try again.")
+      } else if (err.message.includes("Session is")) {
+        setError("Session is not active. Please ask your instructor to start it.")
+      } else {
+        setError("Network error. Please try again.")
+      }
     } finally {
       setValidating(false)
     }
@@ -142,9 +148,8 @@ export default function CodeEntry({ onSubmit, onLogout }: CodeEntryProps) {
 
   const handleSubmit = (e: React.FormEvent) => {
     e.preventDefault()
-    if (!code) return setError("Please enter a code")
-    if (code.length !== 6) return setError("Code must be 6 characters")
-    validateCode(code)
+    if (!code.trim()) return setError("Please enter a code")
+    validateCode(code.trim())
   }
 
   return (
@@ -155,7 +160,7 @@ export default function CodeEntry({ onSubmit, onLogout }: CodeEntryProps) {
             Student Portal
           </Badge>
           <h1 className="text-3xl md:text-4xl font-bold text-foreground mb-2">Mark Attendance</h1>
-          <p className="text-muted-foreground">Enter the 6-character code from your instructor</p>
+          {/* <p className="text-muted-foreground">Enter the code from your instructor</p> */}
         </div>
 
         <Card className="shadow-lg border-border">
@@ -172,13 +177,12 @@ export default function CodeEntry({ onSubmit, onLogout }: CodeEntryProps) {
                 <Input
                   ref={inputRef}
                   type="text"
-                  placeholder="ABC123"
+                  placeholder="Please Enter the Class Session Code"
                   value={code}
                   onChange={(e) => handleCodeChange(e.target.value)}
-                  maxLength={6}
                   disabled={loading}
                   className={`
-                    text-center text-3xl tracking-widest font-mono h-16 uppercase
+                    text-center text-xl tracking-wide font-mono h-14
                     ${error ? "border-destructive" : ""}
                     ${success ? "border-green-500" : ""}
                   `}
@@ -196,7 +200,7 @@ export default function CodeEntry({ onSubmit, onLogout }: CodeEntryProps) {
                 )}
 
                 <div className="absolute -bottom-6 left-0 right-0 text-center">
-                  <span className="text-xs text-muted-foreground">{code.length}/6</span>
+                  {/* <span className="text-xs text-muted-foreground">Code ready</span> */}
                 </div>
               </div>
 
@@ -218,7 +222,7 @@ export default function CodeEntry({ onSubmit, onLogout }: CodeEntryProps) {
 
               <Button
                 type="submit"
-                disabled={loading || code.length !== 6}
+                disabled={loading || !code.trim()}
                 className="w-full h-12 text-lg"
                 size="lg"
               >
@@ -227,9 +231,9 @@ export default function CodeEntry({ onSubmit, onLogout }: CodeEntryProps) {
             </form>
 
             <div className="mt-8 pt-6 border-t text-center">
-              <p className="text-xs text-muted-foreground mb-4">
+              {/* <p className="text-xs text-muted-foreground mb-4">
                 No code? Ask your instructor.
-              </p>
+              </p> */}
               <button
                 onClick={onLogout}
                 disabled={loading}
