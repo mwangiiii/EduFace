@@ -25,7 +25,7 @@ interface AttendanceRecord {
   student_name: string
   student_id: string
   confidence: number
-  status: "present" | "late" | "absent"
+  status: "present" | "late" | "absent" | "in_progress"
   time: string
   photo?: string
 }
@@ -36,6 +36,7 @@ interface AllocationOption {
   unit_name: string
   room?: string
   unit_id: string
+  course_id: string
   schedule: any
 }
 
@@ -66,7 +67,7 @@ export default function LiveAttendancePage() {
   const [enrolledStudents, setEnrolledStudents] = useState<number>(0)
   const [isSessionActive, setIsSessionActive] = useState(false)
   const [searchTerm, setSearchTerm] = useState("")
-  const [filterStatus, setFilterStatus] = useState<"all" | "present" | "absent">("all")
+  const [filterStatus, setFilterStatus] = useState<"all" | "present" | "absent" | "in_progress">("all")
   const [loading, setLoading] = useState(true)
   const [dataLoading, setDataLoading] = useState(false)
   const [notifications, setNotifications] = useState<Notification[]>([])
@@ -74,27 +75,26 @@ export default function LiveAttendancePage() {
   const addNotification = useCallback((title: string, description?: string, variant: "default" | "destructive" = "default") => {
     const id = Math.random().toString(36).substr(2, 9)
     setNotifications(prev => [...prev, { id, title, description, variant }])
-    setTimeout(() => setNotifications(prev => prev.filter(n => n.id !== id)), 5000)
+    setTimeout(() => setNotifications(prev => prev.filter(n => n.id !== id)), 6000)
   }, [])
 
-  const chars = 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789!@#$'
-  const generateCode = useCallback((length = 6): string => {
+  const chars = 'ABCDEFGHJKLMNPQRSTUVWXYZ23456789!@#$%&'
+  const generateCode = useCallback((): string => {
     let result = ''
-    for (let i = 0; i < length; i++) result += chars.charAt(Math.floor(Math.random() * chars.length))
+    for (let i = 0; i < 8; i++) {
+      result += chars.charAt(Math.floor(Math.random() * chars.length))
+    }
     return result
   }, [])
 
   const getStudentPhoto = useCallback((firstInitial: string, lastInitial: string): string => {
-    const initials = `${firstInitial || ''}${lastInitial || ''}`.toUpperCase()
-    const emojiMap: { [key: string]: string } = {
-      'AJ': '👩‍🦰', 'BS': '👨‍🦱', 'CD': '👩‍🦱', 'DM': '👨‍🦲', 'EW': '👩‍🦳', 'FT': '👨‍🦳'
-    }
-    return emojiMap[initials] || '👤'
+    if (!firstInitial || !lastInitial) return '👤'
+    const initials = `${firstInitial}${lastInitial}`.toUpperCase()
+    const emojis = ['👦', '👧', '🧒', '👨‍🎓', '👩‍🎓']
+    const hash = (initials.charCodeAt(0) + initials.charCodeAt(1)) % emojis.length
+    return emojis[hash]
   }, [])
 
-  // ═══════════════════════════════════════════════════════════
-  //  FIXED & SAFE: Only loads units allocated to THIS teacher
-  // ═══════════════════════════════════════════════════════════
   const fetchTeacherAllocations = useCallback(async (userId: string) => {
     setDataLoading(true)
     try {
@@ -139,6 +139,7 @@ export default function LiveAttendancePage() {
             unit_name: unit.name || 'Unknown Unit',
             room: a.room,
             unit_id: a.unit_id,
+            course_id: unit.courses?.id || '',
             schedule: a.schedule || {}
           }
         })
@@ -181,126 +182,192 @@ export default function LiveAttendancePage() {
   const generateUniqueAccessCode = useCallback(async (): Promise<string> => {
     let code: string
     let unique = false
-    while (!unique) {
-      code = generateCode(6)
+    let attempts = 0
+
+    while (!unique && attempts < 50) {
+      code = generateCode()
       const { data } = await supabase
         .from('attendance_sessions')
         .select('id')
         .eq('access_code', code)
         .maybeSingle()
+
       if (!data) unique = true
+      attempts++
     }
+
+    if (!unique) {
+      code = `TMP${Date.now().toString(36).slice(-5).toUpperCase()}`
+    }
+
     return code!
   }, [generateCode])
 
-  const loadAttendanceData = useCallback(async (sessionId?: string, fallbackUnitId?: string) => {
-    setDataLoading(true)
-    try {
-      let effectiveUnitId: string | null = null
-      let currentStatus: string | null = null
+  const loadAttendanceData = useCallback(async (sessionId?: string) => {
+  setDataLoading(true)
+  try {
+    if (!sessionId) {
+      setAttendanceData([])
+      return
+    }
 
-      if (sessionId) {
-        const { data: session } = await supabase
-          .from('attendance_sessions')
-          .select('unit_id, status')
-          .eq('id', sessionId)
-          .single()
+    // 1. Get session + course_id
+    const { data: session, error: sessionError } = await supabase
+      .from('attendance_sessions')
+      .select('status, unit_id')
+      .eq('id', sessionId)
+      .single()
 
-        if (session) {
-          effectiveUnitId = session.unit_id
-          currentStatus = session.status
-        }
-      } else {
-        effectiveUnitId = fallbackUnitId || null
-      }
+    if (sessionError || !session) {
+      addNotification("Session Not Found", "Could not load session.", "destructive")
+      return
+    }
 
-      if (!effectiveUnitId) {
-        setEnrolledStudents(0)
-        setAttendanceData([])
-        return
-      }
+    if (!['in_progress', 'completed'].includes(session.status)) {
+      setAttendanceData([])
+      return
+    }
 
-      const { data: unit } = await supabase
-        .from('units')
-        .select('course_id')
-        .eq('id', effectiveUnitId)
-        .single()
+    const { data: unitData } = await supabase
+      .from('units')
+      .select('course_id')
+      .eq('id', session.unit_id)
+      .single()
 
-      if (!unit) {
-        setEnrolledStudents(0)
-        setAttendanceData([])
-        return
-      }
+    const courseId = unitData?.course_id
+    if (!courseId) {
+      addNotification("No Course", "Unit has no course linked.", "destructive")
+      return
+    }
 
-      const { count } = await supabase
-        .from('enrollments')
-        .select('*', { count: 'exact', head: true })
-        .eq('course_id', unit.course_id)
-        .eq('status', 'active')
+    // 2. Fetch attendance records (only student_id from students table)
+    const { data: records } = await supabase
+      .from('attendance_records')
+      .select(`
+        id,
+        student_id,
+        confidence_score,
+        status,
+        timestamp
+      `)
+      .eq('session_id', sessionId)
+      .order('timestamp', { ascending: true })
 
-      setEnrolledStudents(count || 0)
+    // 3. Fetch ALL active enrollments for this course (only student_id)
+    const { data: enrollments } = await supabase
+      .from('enrollments')
+      .select('student_id')
+      .eq('course_id', courseId)
+      .eq('status', 'active')
 
-      if (!['in_progress', 'completed'].includes(currentStatus || '')) {
-        setAttendanceData([])
-        return
-      }
+    const enrolledStudentIds = new Set(enrollments?.map(e => e.student_id) || [])
+    setEnrolledStudents(enrolledStudentIds.size)
 
-      const { data: records } = await supabase
-        .from('attendance_records')
+    // 4. Collect ALL unique student UUIDs we need names for
+    const allStudentIds = new Set<string>()
+    records?.forEach(r => r.student_id && allStudentIds.add(r.student_id))
+    enrollments?.forEach(e => e.student_id && allStudentIds.add(e.student_id))
+
+    // 5. ONE FLAT QUERY to get all student details + names (this bypasses nested RLS bugs)
+    let studentDetailsMap = new Map<string, any>()
+    if (allStudentIds.size > 0) {
+      const { data: studentDetails } = await supabase
+        .from('students')
         .select(`
           id,
-          confidence_score,
-          status,
-          timestamp,
-          students (
-            id,
-            users ( first_name, last_name )
+          student_id,
+          user_id,
+          users!user_id (
+            first_name,
+            last_name
           )
         `)
-        .eq('session_id', sessionId!)
-        .order('timestamp', { ascending: true })
+        .in('id', Array.from(allStudentIds))
 
-      const recordedStudents: AttendanceRecord[] = (records || []).map(r => ({
+      studentDetails?.forEach(s => {
+        studentDetailsMap.set(s.id, {
+          student_id: s.student_id,
+          first_name: s.users?.first_name?.trim() || '',
+          last_name: s.users?.last_name?.trim() || ''
+        })
+      })
+    }
+
+    // 6. Build final attendance list
+    const recordedStudents: AttendanceRecord[] = (records || []).map(r => {
+      const details = studentDetailsMap.get(r.student_id) || {}
+      const fullName = `${details.first_name || ''} ${details.last_name || ''}`.trim() || 'Unknown Student'
+
+      return {
         id: r.id,
-        student_name: `${r.students?.users?.first_name || ''} ${r.students?.users?.last_name || ''}`.trim() || 'Unknown Student',
-        student_id: r.students?.id || '',
-        confidence: Math.round((r.confidence_score || 0) * 100),
-        status: r.status as AttendanceRecord['status'] || 'present',
+        student_name: fullName,
+        student_id: details.student_id || 'N/A',
+        confidence: r.status === 'in_progress' ? 0 : Math.round((r.confidence_score || 0) * 100),
+        status: (r.status as AttendanceRecord['status']) || 'present',
         time: new Date(r.timestamp).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
-        photo: getStudentPhoto(r.students?.users?.first_name?.[0] || '', r.students?.users?.last_name?.[0] || '')
-      }))
+        photo: getStudentPhoto(details.first_name?.[0] || '', details.last_name?.[0] || '')
+      }
+    })
 
-      const recordedStudentIds = new Set(recordedStudents.map(p => p.student_id))
+    // 7. Absent students
+    const recordedIds = new Set(records?.map(r => r.student_id) || [])
+    const absentStudents: AttendanceRecord[] = Array.from(enrolledStudentIds)
+      .filter(id => !recordedIds.has(id))
+      .map(id => {
+        const details = studentDetailsMap.get(id) || {}
+        const fullName = `${details.first_name || ''} ${details.last_name || ''}`.trim() || 'Unknown Student'
 
-      const { data: allEnrollments } = await supabase
-        .from('enrollments')
-        .select(`id, students ( id, users ( first_name, last_name ) )`)
-        .eq('course_id', unit.course_id)
-        .eq('status', 'active')
-
-      const absentStudents = (allEnrollments || [])
-        .filter(e => !recordedStudentIds.has(e.students?.id || ''))
-        .map(e => ({
-          id: `absent-${e.id}`,
-          student_name: `${e.students?.users?.first_name || ''} ${e.students?.users?.last_name || ''}`.trim() || 'Unknown Student',
-          student_id: e.students?.id || '',
+        return {
+          id: `absent-${id}`,
+          // student_name: fullName,
+          student_id: details.student_id || 'N/A',
           confidence: 0,
           status: 'absent' as const,
           time: '—',
-          photo: getStudentPhoto(e.students?.users?.first_name?.[0] || '', e.students?.users?.last_name?.[0] || '')
-        }))
+          photo: getStudentPhoto(details.first_name?.[0] || '', details.last_name?.[0] || '')
+        }
+      })
 
-      setAttendanceData([...recordedStudents, ...absentStudents])
-    } catch (error) {
-      addNotification("Error Loading Attendance", "Failed to fetch data.", "destructive")
-    } finally {
-      setDataLoading(false)
+    setAttendanceData([...recordedStudents, ...absentStudents])
+  } catch (error: any) {
+    console.error("Load attendance error:", error)
+    addNotification("Error Loading Data", error.message || "Unknown error", "destructive")
+  } finally {
+    setDataLoading(false)
+  }
+}, [getStudentPhoto, addNotification])
+
+  const saveSessionToStorage = useCallback((sessionId: string, session: ActiveSession) => {
+    localStorage.setItem('activeSessionId', sessionId)
+    localStorage.setItem('activeSession', JSON.stringify(session))
+  }, [])
+
+  const loadSessionFromStorage = useCallback(async () => {
+    const storedSessionId = localStorage.getItem('activeSessionId')
+    const storedSession = localStorage.getItem('activeSession')
+    if (storedSessionId && storedSession) {
+      try {
+        const parsedSession = JSON.parse(storedSession) as ActiveSession
+        setActiveSessionId(storedSessionId)
+        setActiveSession(parsedSession)
+        setIsSessionActive(parsedSession.status === 'in_progress')
+        await loadAttendanceData(storedSessionId)
+        addNotification("Session Restored", "Active session loaded.", "default")
+      } catch (err) {
+        localStorage.removeItem('activeSessionId')
+        localStorage.removeItem('activeSession')
+      }
     }
-  }, [getStudentPhoto, addNotification])
+  }, [loadAttendanceData, addNotification])
+
+  const clearSessionFromStorage = useCallback(() => {
+    localStorage.removeItem('activeSessionId')
+    localStorage.removeItem('activeSession')
+  }, [])
 
   const createSession = useCallback(async (allocationId: string) => {
     const allocation = allocations.find(a => a.id === allocationId)
-    if (!allocation) return addNotification("Invalid Class", "Selected class not found.")
+    if (!allocation) return addNotification("Invalid Class", "Selected class not found.", "destructive")
 
     setDataLoading(true)
     try {
@@ -325,55 +392,60 @@ export default function LiveAttendancePage() {
 
       if (error || !newSession) throw error
 
-      setActiveSessionId(newSession.id)
-      setActiveSession({
+      const parsedSession: ActiveSession = {
         id: newSession.id,
         session_id: sessionId,
         date_time: now,
         status: 'in_progress',
         room: allocation.room || '',
         access_code: accessCode
-      })
+      }
+
+      setActiveSessionId(newSession.id)
+      setActiveSession(parsedSession)
       setIsSessionActive(true)
-      addNotification("Session Started", `Access code: ${accessCode}`)
+      saveSessionToStorage(newSession.id, parsedSession)
+      addNotification("Session Started", `Code: ${accessCode}`, "default")
       await loadAttendanceData(newSession.id)
     } catch (err: any) {
+      console.error("Create session error:", err)
       addNotification("Failed to Start", err.message || "Could not create session.", "destructive")
     } finally {
       setDataLoading(false)
     }
-  }, [allocations, generateUniqueSessionId, generateUniqueAccessCode, loadAttendanceData, addNotification])
+  }, [allocations, generateUniqueSessionId, generateUniqueAccessCode, loadAttendanceData, addNotification, saveSessionToStorage])
 
   const startSession = useCallback(() => {
-    if (!selectedAllocationId) return addNotification("No Class Selected", "Please select a class first.")
+    if (!selectedAllocationId) return addNotification("No Class Selected", "Please select a class first.", "destructive")
     createSession(selectedAllocationId)
   }, [selectedAllocationId, createSession, addNotification])
 
   const endSession = useCallback(async () => {
     if (!activeSessionId) return
 
-    const { error } = await supabase
-      .from('attendance_sessions')
-      .update({ status: 'completed' })
-      .eq('id', activeSessionId)
+    try {
+      const { error } = await supabase
+        .from('attendance_sessions')
+        .update({ status: 'completed' })
+        .eq('id', activeSessionId)
 
-    if (error) {
-      addNotification("Failed to End Session", error.message, "destructive")
-      return
+      if (error) throw error
+
+      addNotification("Session Ended", "Attendance finalized successfully.", "default")
+
+      setIsSessionActive(false)
+      setActiveSessionId(null)
+      setActiveSession(null)
+      clearSessionFromStorage()
+      await loadAttendanceData(activeSessionId)
+    } catch (err: any) {
+      addNotification("Failed to End Session", err.message || "Unknown error", "destructive")
     }
+  }, [activeSessionId, loadAttendanceData, addNotification, clearSessionFromStorage])
 
-    setActiveSession(prev => prev ? { ...prev, status: 'completed' } : prev)
-    setIsSessionActive(false)
-    addNotification("Session Ended", "Attendance saved.")
-    await loadAttendanceData(activeSessionId)
-  }, [activeSessionId, loadAttendanceData, addNotification])
-
-  // Initial load
-    // Initial load – fetch user + allocations
   useEffect(() => {
     const init = async () => {
       setLoading(true)
-
       const { data: { user } } = await supabase.auth.getUser()
       if (!user) {
         addNotification("Not Logged In", "Please log in again.", "destructive")
@@ -381,37 +453,54 @@ export default function LiveAttendancePage() {
         return
       }
 
-      const { data: profile, error: profileError } = await supabase
+      const { data: profile } = await supabase
         .from('users')
         .select('id, first_name, last_name, role')
         .eq('id', user.id)
         .single()
 
-      if (profileError || !profile) {
-        addNotification("Profile Error", "Could not load your profile.", "destructive")
-        setLoading(false)
-        return
-      }
-
-      if (profile.role !== 'teacher') {
-        addNotification("Access Denied", "This page is for teachers only.", "destructive")
+      if (!profile || profile.role !== 'teacher') {
+        addNotification("Access Denied", "Teachers only.", "destructive")
         setLoading(false)
         return
       }
 
       setUserProfile(profile)
       await fetchTeacherAllocations(profile.id)
+      await loadSessionFromStorage()
+
+      const stored = localStorage.getItem('selectedAllocationId')
+      if (stored && allocations.find(a => a.id === stored)) {
+        setSelectedAllocationId(stored)
+      }
+
       setLoading(false)
     }
-
     init()
-  }, [addNotification, fetchTeacherAllocations])
+  }, [addNotification, fetchTeacherAllocations, loadSessionFromStorage])
 
   useEffect(() => {
     const alloc = allocations.find(a => a.id === selectedAllocationId)
     setSelectedAllocation(alloc || null)
-    if (alloc) loadAttendanceData(activeSessionId, alloc.unit_id)
-  }, [selectedAllocationId, allocations, activeSessionId, loadAttendanceData])
+    if (selectedAllocationId) {
+      localStorage.setItem('selectedAllocationId', selectedAllocationId)
+    }
+    if (alloc && !activeSessionId) {
+      // Load enrolled students count for preview
+      const loadEnrollmentsCount = async () => {
+        if (!alloc.course_id) return
+        const { data, error } = await supabase
+          .from('enrollments')
+          .select('id')
+          .eq('course_id', alloc.course_id)
+          .eq('status', 'active')
+        if (!error) {
+          setEnrolledStudents(data?.length || 0)
+        }
+      }
+      loadEnrollmentsCount()
+    }
+  }, [selectedAllocationId, allocations, activeSessionId])
 
   useEffect(() => {
     if (!activeSessionId || !isSessionActive) return
@@ -428,8 +517,22 @@ export default function LiveAttendancePage() {
     return () => { supabase.removeChannel(channel) }
   }, [activeSessionId, isSessionActive, loadAttendanceData])
 
+  useEffect(() => {
+    if (selectedAllocationId) {
+      const stored = localStorage.getItem('selectedAllocationId')
+      if (localStorage.getItem('activeSessionId') && stored !== selectedAllocationId) {
+        clearSessionFromStorage()
+        setActiveSessionId(null)
+        setActiveSession(null)
+        setIsSessionActive(false)
+        setAttendanceData([])
+      }
+    }
+  }, [selectedAllocationId, clearSessionFromStorage])
+
   const filtered = useMemo(() => attendanceData.filter(s => {
-    const matchesSearch = s.student_name.toLowerCase().includes(searchTerm.toLowerCase())
+    const name = typeof s.student_name === 'string' ? s.student_name : ''
+    const matchesSearch = name.toLowerCase().includes(searchTerm.toLowerCase())
     const matchesFilter = filterStatus === "all" || s.status === filterStatus
     return matchesSearch && matchesFilter
   }), [attendanceData, searchTerm, filterStatus])
@@ -448,7 +551,6 @@ export default function LiveAttendancePage() {
         <Navbar />
         <main className="pt-16 p-4 md:p-6 space-y-6 relative">
 
-          {/* Notifications */}
           <div className="fixed top-20 right-4 z-50 space-y-2">
             {notifications.map(n => (
               <Alert key={n.id} variant={n.variant === "destructive" ? "destructive" : "default"}>
@@ -462,26 +564,25 @@ export default function LiveAttendancePage() {
 
           <div>
             <h1 className="text-2xl md:text-3xl font-bold mb-2">Live Attendance</h1>
-            <p className="text-muted-foreground">Track attendance in real-time for your classes</p>
+            <p className="text-muted-foreground">Track attendance in real-time</p>
           </div>
 
-          {/* Your full original UI starts here — 100% restored */}
           <Card>
             <CardHeader>
               <CardTitle className="flex items-center gap-2"><Users className="h-5 w-5" />Select Class</CardTitle>
-              <CardDescription>Choose a class and unit to manage attendance</CardDescription>
             </CardHeader>
             <CardContent>
               <Select value={selectedAllocationId || ''} onValueChange={(v) => {
                 setSelectedAllocationId(v)
-                setActiveSessionId(null)
-                setActiveSession(null)
-                setIsSessionActive(false)
-                setAttendanceData([])
+                if (activeSessionId) {
+                  clearSessionFromStorage()
+                  setActiveSessionId(null)
+                  setActiveSession(null)
+                  setIsSessionActive(false)
+                  setAttendanceData([])
+                }
               }}>
-                <SelectTrigger className="w-full">
-                  <SelectValue placeholder="Select a class..." />
-                </SelectTrigger>
+                <SelectTrigger><SelectValue placeholder="Select a class..." /></SelectTrigger>
                 <SelectContent>
                   {allocations.map(a => (
                     <SelectItem key={a.id} value={a.id}>
@@ -490,61 +591,52 @@ export default function LiveAttendancePage() {
                   ))}
                 </SelectContent>
               </Select>
-              {allocations.length === 0 && !dataLoading && (
-                <Alert className="mt-4">
-                  <AlertCircle className="h-4 w-4" />
-                  <AlertDescription>No classes allocated. Contact administrator.</AlertDescription>
-                </Alert>
-              )}
             </CardContent>
           </Card>
 
           {selectedAllocation && (
             <>
-              {/* Session Controls */}
               <Card>
                 <CardHeader>
                   <CardTitle className="flex items-center gap-2"><Play className="h-5 w-5" />Session Controls</CardTitle>
                   <CardDescription>
-                    {activeSession
-                      ? `${activeSession.status === 'in_progress' ? 'Active' : 'Completed'} session: ${selectedAllocation.course_name} - ${selectedAllocation.unit_name}`
-                      : `Ready to start session for ${selectedAllocation.course_name} - ${selectedAllocation.unit_name}`}
+                    {isSessionActive ? "Session in progress" : "Ready to start"}
                   </CardDescription>
                 </CardHeader>
                 <CardContent className="space-y-4">
                   <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-                    <div className="space-y-2">
-                      <p className="text-sm font-medium">Session Details</p>
-                      <div className="text-sm text-muted-foreground space-y-1">
-                        <p>Room: {selectedAllocation.room || activeSession?.room || 'Not specified'}</p>
-                        {activeSession && <p>Started: {new Date(activeSession.date_time).toLocaleString()}</p>}
-                        {selectedAllocation.schedule && (
-                          <p>Schedule: {selectedAllocation.schedule.days?.join(', ') || ''} | {selectedAllocation.schedule.start_time} - {selectedAllocation.schedule.end_time}</p>
-                        )}
-                      </div>
+                    <div className="space-y-3">
+                      <p className="text-sm font-medium">Class</p>
+                      <p className="text-sm text-muted-foreground">
+                        {selectedAllocation.course_name} - {selectedAllocation.unit_name}
+                        {selectedAllocation.room && ` • Room ${selectedAllocation.room}`}
+                      </p>
                       {activeSession && (
-                        <div className="pt-2 border-t">
-                          <p className="text-sm font-medium text-muted-foreground">Unique Access Code</p>
-                          <Badge variant="secondary" className="font-mono mt-1 text-lg">{activeSession.access_code}</Badge>
+                        <div className="pt-3 border-t">
+                          <p className="text-sm font-medium text-muted-foreground">Access Code</p>
+                          <Badge variant="secondary" className="font-mono text-lg tracking-wider">
+                            {activeSession.access_code}
+                          </Badge>
                         </div>
                       )}
                     </div>
-                    <div className="flex flex-col sm:flex-row gap-2 justify-end">
-                      {activeSession?.status === 'in_progress' ? (
+
+                    <div className="flex flex-col gap-3 justify-end">
+                      {isSessionActive ? (
                         <>
-                          <Button variant="outline" onClick={() => loadAttendanceData(activeSessionId)} disabled={dataLoading} size="sm">
-                            <RefreshCw className="h-4 w-4 mr-2" />Refresh
+                          <Button variant="outline" onClick={() => loadAttendanceData(activeSessionId)} disabled={dataLoading}>
+                            <RefreshCw className="h-4 w-4 mr-2" /> Refresh
                           </Button>
                           <AlertDialog>
                             <AlertDialogTrigger asChild>
-                              <Button variant="destructive" size="sm" disabled={dataLoading}>
-                                <StopCircle className="h-4 w-4 mr-2" />End Session
+                              <Button variant="destructive">
+                                <StopCircle className="h-4 w-4 mr-2" /> End Session
                               </Button>
                             </AlertDialogTrigger>
                             <AlertDialogContent>
                               <AlertDialogHeader>
-                                <AlertDialogTitle>End Attendance Session?</AlertDialogTitle>
-                                <AlertDialogDescription>This will save all attendance data.</AlertDialogDescription>
+                                <AlertDialogTitle>End Session?</AlertDialogTitle>
+                                <AlertDialogDescription>This will finalize attendance.</AlertDialogDescription>
                               </AlertDialogHeader>
                               <AlertDialogFooter>
                                 <AlertDialogCancel>Cancel</AlertDialogCancel>
@@ -554,9 +646,9 @@ export default function LiveAttendancePage() {
                           </AlertDialog>
                         </>
                       ) : (
-                        <Button onClick={startSession} disabled={dataLoading} size="sm">
-                          <Play className="h-4 w-4 mr-2" />
-                          {activeSession?.status === 'completed' ? 'Start New Session' : 'Start Attendance'}
+                        <Button onClick={startSession} disabled={dataLoading} size="lg">
+                          <Play className="h-5 w-5 mr-2" />
+                          Start Attendance
                         </Button>
                       )}
                     </div>
@@ -564,73 +656,53 @@ export default function LiveAttendancePage() {
                 </CardContent>
               </Card>
 
-              {/* Stats + Student List — everything you had before */}
-              <div className="grid grid-cols-1 sm:grid-cols-3 gap-4">
-                <Card><CardContent className="p-6 text-center"><Users className="h-6 w-6 text-green-500 mx-auto mb-2" /><div className="text-2xl font-bold text-green-500">{presentCount}</div><p className="text-sm text-muted-foreground">Present</p></CardContent></Card>
-                <Card><CardContent className="p-6 text-center"><UserX className="h-6 w-6 text-red-500 mx-auto mb-2" /><div className="text-2xl font-bold text-red-500">{absentCount}</div><p className="text-sm text-muted-foreground">Absent</p></CardContent></Card>
-                <Card><CardContent className="p-6 text-center"><UserCheck className="h-6 w-6 text-primary mx-auto mb-2" /><div className="text-2xl font-bold">{attendanceRate}%</div><p className="text-sm text-muted-foreground">Attendance Rate</p></CardContent></Card>
+              <div className="grid grid-cols-3 gap-4">
+                <Card><CardContent className="p-6 text-center"><Users className="h-8 w-8 text-green-500 mx-auto mb-2" /><div className="text-3xl font-bold text-green-500">{presentCount}</div><p className="text-sm text-muted-foreground">Present</p></CardContent></Card>
+                <Card><CardContent className="p-6 text-center"><UserX className="h-8 w-8 text-red-500 mx-auto mb-2" /><div className="text-3xl font-bold text-red-500">{absentCount}</div><p className="text-sm text-muted-foreground">Absent</p></CardContent></Card>
+                <Card><CardContent className="p-6 text-center"><UserCheck className="h-8 w-8 text-primary mx-auto mb-2" /><div className="text-3xl font-bold">{attendanceRate}%</div><p className="text-sm text-muted-foreground">Rate</p></CardContent></Card>
               </div>
 
               <Card>
-                <CardHeader className="flex flex-row items-center justify-between">
-                  <div>
-                    <CardTitle className="flex items-center gap-2"><Users className="h-5 w-5" />Student List</CardTitle>
-                    <CardDescription>Real-time attendance records ({filtered.length} shown)</CardDescription>
-                  </div>
-                  <div className="flex flex-col sm:flex-row gap-2">
-                    <div className="relative">
-                      <Search className="absolute left-3 top-1/2 -translate-y-1/2 h-4 w-4 text-muted-foreground" />
-                      <Input placeholder="Search by name..." value={searchTerm} onChange={e => setSearchTerm(e.target.value)} className="pl-10 w-full sm:w-48" />
-                    </div>
-                    <Select value={filterStatus} onValueChange={v => setFilterStatus(v as any)}>
-                      <SelectTrigger className="w-32"><Filter className="h-4 w-4 mr-2" /><SelectValue /></SelectTrigger>
-                      <SelectContent>
-                        <SelectItem value="all">All</SelectItem>
-                        <SelectItem value="present">Present</SelectItem>
-                        <SelectItem value="absent">Absent</SelectItem>
-                      </SelectContent>
-                    </Select>
-                  </div>
+                <CardHeader>
+                  <CardTitle className="flex items-center gap-2"><Users className="h-5 w-5" />Students ({filtered.length})</CardTitle>
                 </CardHeader>
                 <CardContent>
                   {dataLoading ? (
-                    <div className="flex justify-center py-8"><div className="animate-spin h-6 w-6 border-b-2 border-primary rounded-full" /></div>
+                    <div className="flex justify-center py-12"><div className="animate-spin h-8 w-8 border-b-2 border-primary rounded-full" /></div>
                   ) : (
-                    <table className="w-full text-sm">
-                      <thead className="sticky top-0 bg-background">
-                        <tr className="border-b">
-                          <th className="text-left py-3 px-4 font-medium">Student</th>
-                          <th className="text-left py-3 px-4 font-medium min-w-[100px]">Confidence</th>
-                          <th className="text-left py-3 px-4 font-medium min-w-[80px]">Status</th>
-                          <th className="text-left py-3 px-4 font-medium min-w-[80px]">Time</th>
-                        </tr>
-                      </thead>
-                      <tbody>
-                        {filtered.map(student => (
-                          <tr key={student.id} className="border-b hover:bg-muted/50">
-                            <td className="py-3 px-4"><div className="flex items-center gap-3"><span className="text-xl">{student.photo}</span><span className="font-medium">{student.student_name}</span></div></td>
-                            <td className="py-3 px-4">{['present', 'late'].includes(student.status) ? `${student.confidence}%` : "—"}</td>
-                            <td className="py-3 px-4"><Badge variant={student.status === 'absent' ? "destructive" : "default"}>{student.status.charAt(0).toUpperCase() + student.status.slice(1)}</Badge></td>
-                            <td className="py-3 px-4">{student.time}</td>
-                          </tr>
-                        ))}
-                        {filtered.length === 0 && (
-                          <tr><td colSpan={4} className="py-8 text-center text-muted-foreground">
-                            {isSessionActive || activeSession?.status === 'completed' ? 'No students match your filters.' : 'Start the session to begin tracking.'}
-                          </td></tr>
-                        )}
-                      </tbody>
-                    </table>
+                    <div className="space-y-3">
+                      {filtered.length === 0 ? (
+                        <p className="text-center text-muted-foreground py-12">
+                          {isSessionActive ? "No students match filters" : "Start session to track attendance"}
+                        </p>
+                      ) : (
+                        filtered.map(student => {
+                          const badgeVariant = student.status === 'absent' ? "destructive" : student.status === 'in_progress' ? "secondary" : "default"
+                          const statusText = student.status === 'in_progress' ? 'In Progress' : student.status.charAt(0).toUpperCase() + student.status.slice(1)
+                          return (
+                            <div key={student.id} className="flex items-center justify-between p-4 rounded-lg border hover:bg-muted/50">
+                              <div className="flex items-center gap-4">
+                                <span className="text-2xl">{student.photo}</span>
+                                <div>
+                                  <p className="font-medium">{student.student_name}</p>
+                                  <p className="text-sm text-muted-foreground">ID: {student.student_id}</p>
+                                </div>
+                              </div>
+                              <div className="text-right">
+                                <Badge variant={badgeVariant}>{statusText}</Badge>
+                                <p className="text-sm text-muted-foreground mt-1">{student.time}</p>
+                                {student.confidence > 0 && (
+                                  <p className="text-xs text-muted-foreground">Confidence: {student.confidence}%</p>
+                                )}
+                              </div>
+                            </div>
+                          )
+                        })
+                      )}
+                    </div>
                   )}
                 </CardContent>
               </Card>
-
-              {!isSessionActive && !activeSession && (
-                <Alert className="max-w-md">
-                  <Play className="h-4 w-4" />
-                  <AlertDescription>Ready to begin? Click "Start Attendance" to generate a unique access code.</AlertDescription>
-                </Alert>
-              )}
             </>
           )}
         </main>

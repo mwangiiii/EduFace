@@ -688,6 +688,7 @@ export default function CoursesManagementPage() {
       </div>
     )
   }
+  
 
   return (
     <div className="flex">

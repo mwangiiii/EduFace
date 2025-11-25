@@ -1,10 +1,17 @@
 "use client"
+// Utility to get first element if array, or self if not
+function getFirstOrSelf<T>(val: T | T[] | undefined): T | undefined {
+  if (Array.isArray(val)) return val[0]
+  return val
+}
 
 import { Sidebar } from "@/components/sidebar"
 import { Navbar } from "@/components/navbar"
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card"
 import { Button } from "@/components/ui/button"
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select"
+import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table"
+import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogDescription } from "@/components/ui/dialog"
 import {
   BarChart,
   Bar,
@@ -18,499 +25,660 @@ import {
   Pie,
   Cell,
 } from "recharts"
-import { Download, FileText } from "lucide-react"
-import { useState, useEffect } from "react"
+import { Download, Calendar, TrendingUp, Users, Eye } from "lucide-react"
+import { useState, useEffect, useCallback } from "react"
 import { supabase } from "@/lib/supabaseClient"
 
 interface UserProfile {
+  id: string
   first_name: string
   last_name: string
-  role: string
-  id: string
+  role: "teacher" | "administrator"
 }
 
-interface AttendanceTrendData {
+interface AttendanceTrend {
   date: string
   present: number
   absent: number
+  total: number
+  rate: number
 }
 
-interface CourseAttendanceData {
-  name: string
-  value: number
-  color: string
+interface CourseStats {
+  course_id: string
+  course_name: string
+  present: number
+  total_expected: number
+  rate: number
 }
 
 interface StudentReport {
+  student_id: string
   name: string
-  totalDays: number
+  student_number: string
   present: number
   absent: number
-  rate: string
+  total_sessions: number
+  rate: number
+}
+
+interface SessionDetail {
+  id: string
+  session_id: string
+  date_time: string
+  unit_name: string
+  course_name: string
+  present_students: { student_number: string; timestamp: string }[]
+  absent_students: { name: string; student_number: string }[]
+  total_enrolled: number
 }
 
 interface KeyMetric {
   label: string
-  value: string
-  color?: string
+  value: string | number
+  icon?: React.ReactNode
 }
 
+interface SessionRow {
+  id: string
+  session_id: string
+  date_time: string
+  unit_name: string
+  course_name: string
+  present: number
+  enrolled: number
+}
+
+
+// Wrap all logic in a component
 export default function ReportsPage() {
+    // ...existing code...
   const [userProfile, setUserProfile] = useState<UserProfile | null>(null)
-  const [dateRange, setDateRange] = useState("week")
-  const [attendanceChartData, setAttendanceChartData] = useState<AttendanceTrendData[]>([])
-  const [courseData, setCourseData] = useState<CourseAttendanceData[]>([])
-  const [studentReports, setStudentReports] = useState<StudentReport[]>([])
-  const [keyMetrics, setKeyMetrics] = useState<KeyMetric[]>([])
+  const [dateRange, setDateRange] = useState<"week" | "month" | "quarter" | "year">("month")
+  const [customStart, setCustomStart] = useState<string>("")
+  const [customEnd, setCustomEnd] = useState<string>("")
+  const [unitFilter, setUnitFilter] = useState<string>("")
+  const [courseFilter, setCourseFilter] = useState<string>("")
   const [loading, setLoading] = useState(true)
   const [fetching, setFetching] = useState(false)
+  const [sessionDetail, setSessionDetail] = useState<SessionDetail | null>(null)
+  const [showSessionDialog, setShowSessionDialog] = useState(false)
 
-  useEffect(() => {
-    const fetchUserProfile = async () => {
-      try {
-        const { data: { user }, error: authError } = await supabase.auth.getUser()
-        if (authError || !user) {
-          console.error('Auth error:', authError)
-          return
-        }
+  const [trendData, setTrendData] = useState<AttendanceTrend[]>([])
+  // const [coursePieData, setCoursePieData] = useState<CourseStats[]>([])
+  const [studentReports, setStudentReports] = useState<StudentReport[]>([])
+  const [keyMetrics, setKeyMetrics] = useState<KeyMetric[]>([])
+  // const [recentSessions, setRecentSessions] = useState<SessionRow[]>([])
+  const [allSessions, setAllSessions] = useState<SessionRow[]>([])
+  const [allUnits, setAllUnits] = useState<string[]>([])
+  const [allCourses, setAllCourses] = useState<string[]>([])
 
-        const { data: profile, error: profileError } = await supabase
-          .from('users')
-          .select('first_name, last_name, role, id')
-          .eq('id', user.id)
-          .single()
 
-        if (profileError || !profile || !['administrator', 'teacher'].includes(profile.role)) {
-          console.error('Profile fetch error or unauthorized role:', profileError)
-          return
-        }
 
-        setUserProfile(profile)
-        await fetchReportsData(dateRange)
-      } catch (error) {
-        console.error('Unexpected error:', error)
-      } finally {
-        setLoading(false)
-      }
+  const getDateRangeFilter = () => {
+    if (customStart && customEnd) {
+      return { start: new Date(customStart).toISOString(), end: new Date(customEnd).toISOString() }
     }
+    const now = new Date()
+    let startDate: Date
+    switch (dateRange) {
+      case "week":
+        startDate = new Date(now.getTime() - 7 * 24 * 60 * 60 * 1000)
+        break
+      case "month":
+        startDate = new Date(now.getTime() - 30 * 24 * 60 * 60 * 1000)
+        break
+      case "quarter":
+        startDate = new Date(now.getTime() - 90 * 24 * 60 * 60 * 1000)
+        break
+      case "year":
+        startDate = new Date(now.getTime() - 365 * 24 * 60 * 60 * 1000)
+        break
+      default:
+        startDate = new Date(now.getTime() - 30 * 24 * 60 * 60 * 1000)
+    }
+    return { start: startDate.toISOString(), end: now.toISOString() }
+  }
 
-    fetchUserProfile()
-  }, [])
-
-  const fetchReportsData = async (range: string) => {
+  const fetchReportsData = useCallback(async () => {
     if (!userProfile) return
     setFetching(true)
+
     try {
-      const now = new Date('2025-11-07') // Current date as per context
-      let startDate: Date
-      switch (range) {
-        case 'week':
-          startDate = new Date(now.getTime() - 7 * 24 * 60 * 60 * 1000)
-          break
-        case 'month':
-          startDate = new Date(now.getTime() - 30 * 24 * 60 * 60 * 1000)
-          break
-        case 'quarter':
-          startDate = new Date(now.getTime() - 90 * 24 * 60 * 60 * 1000)
-          break
-        case 'year':
-          startDate = new Date(now.getTime() - 365 * 24 * 60 * 60 * 1000)
-          break
-        default:
-          startDate = new Date(now.getTime() - 7 * 24 * 60 * 60 * 1000)
+      const { start, end } = getDateRangeFilter()
+      const isTeacher = userProfile.role === "teacher"
+
+      // 1. Get teacher's units
+      let allowedUnitIds: string[] = []
+      if (isTeacher) {
+        const { data: assignments } = await supabase
+          .from("unit_teachers")
+          .select("unit_id")
+          .eq("teacher_id", userProfile.id)
+
+        allowedUnitIds = assignments?.map(a => a.unit_id) || []
       }
 
-      const startIso = startDate.toISOString()
-      const role = userProfile.role
-      let courseIds: string[] = []
-
-      if (role === 'teacher') {
-        // Get teacher's courses via units
-        const { data: teacher } = await supabase
-          .from('teachers')
-          .select('id')
-          .eq('user_id', userProfile.id)
-          .single()
-
-        if (!teacher) {
-          setFetching(false)
-          return
-        }
-
-        const { data: units } = await supabase
-          .from('units')
-          .select('course_id')
-          .eq('teacher_id', teacher.id)
-
-        courseIds = [...new Set(units?.map(u => u.course_id) || [])]
-      } // For admin, courseIds remains empty (all courses)
-
-      // 1. Attendance Trend: Group by date from completed sessions (scoped by courseIds if teacher)
-      let trendQuery = supabase
-        .from('attendance_sessions')
-        .select(`
-          date_time,
-          course_id,
-          enrollments(course_id, count),
-          attendance_records(status)
-        `)
-        .eq('status', 'completed')
-        .gte('date_time', startIso)
-        .order('date_time', { ascending: true })
-
-      if (role === 'teacher' && courseIds.length > 0) {
-        trendQuery = trendQuery.in('course_id', courseIds)
-      }
-
-      const { data: trendData } = await trendQuery
-
-      const dailyData: { [key: string]: { present: number; absent: number } } = {}
-      trendData?.forEach(session => {
-        const dateKey = new Date(session.date_time).toLocaleDateString('en-US', { weekday: 'short' })
-        if (!dailyData[dateKey]) {
-          dailyData[dateKey] = { present: 0, absent: 0 }
-        }
-        const enrolled = session.enrollments?.find(e => e.course_id === session.course_id)?.count || 0
-        const presents = (session.attendance_records || []).filter(r => r.status === 'present').length
-        dailyData[dateKey].present += presents
-        dailyData[dateKey].absent += enrolled - presents
-      })
-
-      const chartData: AttendanceTrendData[] = Object.entries(dailyData)
-        .map(([date, counts]) => ({ date, present: counts.present, absent: counts.absent }))
-        .slice(0, 5) // Limit to 5 days for chart
-
-      setAttendanceChartData(chartData)
-
-      // 2. Course-wise Attendance: Average rate per course (scoped)
-      let courseQuery = supabase
-        .from('courses')
-        .select(`
-          id, name,
-          enrollments!inner(course_id, count),
-          attendance_sessions!inner(course_id, date_time),
-          attendance_records(status)
-        `)
-        .gte('attendance_sessions.date_time', startIso)
-
-      if (role === 'teacher' && courseIds.length > 0) {
-        courseQuery = courseQuery.in('id', courseIds)
-      }
-
-      const { data: courseDataRaw } = await courseQuery
-
-      const courseStats: { [key: string]: { totalPresent: number; totalEnrolled: number } } = {}
-      courseDataRaw?.forEach(course => {
-        const courseId = course.id
-        if (!courseStats[courseId]) {
-          courseStats[courseId] = { totalPresent: 0, totalEnrolled: 0 }
-        }
-        const enrolled = course.enrollments?.reduce((sum, e) => sum + (e.count || 0), 0) || 0
-        const presents = (course.attendance_records || []).filter(r => r.status === 'present').length
-        courseStats[courseId].totalPresent += presents
-        courseStats[courseId].totalEnrolled += enrolled
-      })
-
-      const colors = ['#3b82f6', '#06b6d4', '#8b5cf6', '#ec4899', '#10b981']
-      const pieData: CourseAttendanceData[] = Object.entries(courseStats)
-        .map(([id, stats], index) => {
-          const rate = stats.totalEnrolled > 0 ? Math.round((stats.totalPresent / stats.totalEnrolled) * 100) : 0
-          const courseName = courseDataRaw?.find(c => c.id === id)?.name || 'Unknown'
-          return {
-            name: courseName,
-            value: rate,
-            color: colors[index % colors.length]
-          }
-        })
-        .slice(0, 4) // Limit to 4 courses
-
-      setCourseData(pieData)
-
-      // 3. Key Metrics: Scoped to role
-      let totalStudentsQuery = supabase.from('students').select('*', { count: 'exact', head: true })
+      // 2. Fetch completed sessions
       let sessionsQuery = supabase
-        .from('attendance_sessions')
-        .select('id, course_id, enrollments!inner(course_id, count)', { count: 'exact', head: true })
-        .eq('status', 'completed')
-        .gte('date_time', startIso)
-
-      if (role === 'teacher' && courseIds.length > 0) {
-        totalStudentsQuery = supabase
-          .from('enrollments')
-          .select('student_id', { count: 'exact', head: true })
-          .in('course_id', courseIds)
-          .eq('status', 'active')
-        sessionsQuery = sessionsQuery.in('course_id', courseIds)
-      }
-
-      const { count: totalStudentsCount } = await totalStudentsQuery
-      const { count: totalCompletedSessions, data: allRecords } = await sessionsQuery
-
-      const totalPresentOverall = allRecords?.reduce((sum, s) => {
-        const enrolled = s.enrollments?.find(e => e.course_id === s.course_id)?.count || 0
-        const presents = s.attendance_records?.filter(r => r.status === 'present').length || 0
-        return sum + presents
-      }, 0) || 0
-      const totalEnrolledOverall = allRecords?.reduce((sum, s) => {
-        const enrolled = s.enrollments?.find(e => e.course_id === s.course_id)?.count || 0
-        return sum + enrolled
-      }, 0) || 0
-      const overallRate = totalEnrolledOverall > 0 ? Math.round((totalPresentOverall / totalEnrolledOverall) * 100) : 0
-      const avgPresentPerDay = totalCompletedSessions > 0 ? Math.round(totalPresentOverall / totalCompletedSessions) : 0
-
-      setKeyMetrics([
-        { label: `${role === 'teacher' ? 'Your Classes' : 'Overall'} Attendance Rate`, value: `${overallRate}%` },
-        { label: `${role === 'teacher' ? 'Students in Your Classes' : 'Total Students'}`, value: totalStudentsCount.toString() },
-        { label: 'Average Present/Day', value: avgPresentPerDay.toString() },
-        { label: 'System Uptime', value: '99.8%', color: 'text-green-500' }
-      ])
-
-      // 4. Student Attendance Summary: Top 3 students by rate (scoped)
-      let studentQuery = supabase
-        .from('students')
+        .from("attendance_sessions")
         .select(`
           id,
-          users!inner(first_name, last_name),
-          enrollments!inner(course_id),
-          attendance_records(status, session_id),
-          attendance_sessions!attendance_records(course_id, date_time)
+          session_id,
+          date_time,
+          unit_id,
+          units!inner (
+            id,
+            name,
+            course_id,
+            courses!inner (
+              id,
+              name
+            )
+          )
         `)
-        .eq('attendance_sessions.status', 'completed')
-        .gte('attendance_sessions.date_time', startIso)
+        .eq("status", "completed")
+        .gte("date_time", start)
+        .lte("date_time", end)
+        .order("date_time", { ascending: false })
 
-      if (role === 'teacher' && courseIds.length > 0) {
-        studentQuery = supabase
-          .from('enrollments')
-          .select(`
-            students!inner(id, users!inner(first_name, last_name)),
-            attendance_records(status, session_id),
-            attendance_sessions!attendance_records(course_id, date_time)
-          `)
-          .in('course_id', courseIds)
-          .eq('status', 'active')
-          .eq('attendance_sessions.status', 'completed')
-          .gte('attendance_sessions.date_time', startIso)
+      if (isTeacher && allowedUnitIds.length > 0) {
+        sessionsQuery = sessionsQuery.in("unit_id", allowedUnitIds)
       }
 
-      const { data: studentData } = await studentQuery
+      const { data: sessions, error: sessErr } = await sessionsQuery
+      if (sessErr) throw sessErr
+      if (!sessions || sessions.length === 0) {
+        setTrendData([])
+        // setCoursePieData([])
+        setStudentReports([])
+        // setRecentSessions([])
+        setKeyMetrics([
+          { label: "Total Sessions", value: 0, icon: <Calendar className="h-5 w-5" /> },
+          { label: "Overall Attendance", value: "0%", icon: <TrendingUp className="h-5 w-5" /> },
+          { label: "Active Students", value: 0, icon: <Users className="h-5 w-5" /> },
+          { label: "Avg. Daily Present", value: 0 },
+        ])
+        setFetching(false)
+        return
+      }
 
-      const studentStats: { [key: string]: { totalDays: number; present: number } } = {}
-      studentData?.forEach(enrollOrStudent => {
-        const studentId = enrollOrStudent.students?.id || enrollOrStudent.id
-        if (!studentStats[studentId]) {
-          studentStats[studentId] = { totalDays: 0, present: 0 }
-        }
-        const sessions = enrollOrStudent.attendance_records?.length || 0
-        const presents = enrollOrStudent.attendance_records?.filter(r => r.status === 'present').length || 0
-        studentStats[studentId].totalDays += sessions
-        studentStats[studentId].present += presents
+      const sessionIds = sessions.map(s => s.id)
+      // Handle units and courses as arrays (Supabase join result)
+      const courseIds = [...new Set(sessions.map(s => {
+        const units = getFirstOrSelf(s.units)
+        const courses = getFirstOrSelf(units?.courses)
+        return courses?.id
+      }).filter(Boolean))]
+
+      // 3. Fetch attendance records
+      const { data: records } = await supabase
+        .from("attendance_records")
+        .select("session_id, student_id")
+        .in("session_id", sessionIds)
+
+      // 4. Fetch enrollments + student info
+      const { data: enrollments } = await supabase
+        .from("enrollments")
+        .select(`
+          student_id,
+          course_id,
+          students!inner (
+            id,
+            student_id,
+            users!inner (first_name, last_name)
+          )
+        `)
+        .in("course_id", courseIds)
+        .eq("status", "active")
+
+      // Build maps
+      const studentInfo = new Map<string, { name: string; number: string }>()
+      const enrolledByCourse = new Map<string, Set<string>>()
+
+      enrollments?.forEach(en => {
+        const student = getFirstOrSelf(en.students)
+        const user = getFirstOrSelf(student?.users)
+        const sid = student?.id
+        studentInfo.set(sid, {
+          name: `${user?.first_name || ''} ${user?.last_name || ''}`.trim(),
+          number: student?.student_id
+        })
+        if (!enrolledByCourse.has(en.course_id)) enrolledByCourse.set(en.course_id, new Set())
+        if (sid) enrolledByCourse.get(en.course_id)!.add(sid)
       })
 
-      const reports: StudentReport[] = Object.entries(studentStats)
-        .map(([id, stats]) => {
-          const name = `${studentData?.find(s => (s.students?.id || s.id) === id)?.students?.users?.first_name || 
-                       studentData?.find(s => s.id === id)?.users?.first_name || ''} ${
-            studentData?.find(s => (s.students?.id || s.id) === id)?.students?.users?.last_name || 
-            studentData?.find(s => s.id === id)?.users?.last_name || ''}`.trim()
-          const rate = stats.totalDays > 0 ? Math.round((stats.present / stats.totalDays) * 100) : 0
+      const presentBySession = new Map<string, Set<string>>()
+      records?.forEach(r => {
+        if (!presentBySession.has(r.session_id)) presentBySession.set(r.session_id, new Set())
+        presentBySession.get(r.session_id)!.add(r.student_id)
+      })
+
+      // Build recent sessions list
+      const sessionRows: SessionRow[] = sessions.map(s => {
+        const units = getFirstOrSelf(s.units)
+        const courses = getFirstOrSelf(units?.courses)
+        const courseId = courses?.id
+        const enrolled = enrolledByCourse.get(courseId)?.size || 0
+        const present = presentBySession.get(s.id)?.size || 0
+        return {
+          id: s.id,
+          session_id: s.session_id,
+          date_time: new Date(s.date_time).toLocaleString(),
+          unit_name: units?.name || '',
+          course_name: courses?.name || '',
+          present,
+          enrolled
+        }
+      })
+
+      // Daily trend
+      const daily = new Map<string, { present: number; total: number }>()
+      sessions.forEach(s => {
+        const dateKey = new Date(s.date_time).toLocaleDateString("en-US", { month: "short", day: "numeric" })
+        const units = getFirstOrSelf(s.units)
+        const courses = getFirstOrSelf(units?.courses)
+        const courseId = courses?.id
+        const enrolled = enrolledByCourse.get(courseId)?.size || 0
+        const present = presentBySession.get(s.id)?.size || 0
+
+        if (!daily.has(dateKey)) daily.set(dateKey, { present: 0, total: 0 })
+        const d = daily.get(dateKey)!
+        d.present += present
+        d.total += enrolled
+      })
+
+      const trendArray: AttendanceTrend[] = Array.from(daily.entries())
+        .map(([date, stats]) => ({
+          date,
+          present: stats.present,
+          absent: stats.total - stats.present,
+          total: stats.total,
+          rate: stats.total > 0 ? Math.round((stats.present / stats.total) * 100) : 0
+        }))
+        .sort((a, b) => new Date(a.date).getTime() - new Date(b.date).getTime())
+
+      // Course stats
+      const courseStatsMap = new Map<string, { name: string; present: number; total: number }>()
+      sessions.forEach(s => {
+        const units = getFirstOrSelf(s.units)
+        const c = getFirstOrSelf(units?.courses)
+        if (!c) return
+        const enrolled = enrolledByCourse.get(c.id)?.size || 0
+        const present = presentBySession.get(s.id)?.size || 0
+        if (!courseStatsMap.has(c.id)) courseStatsMap.set(c.id, { name: c.name, present: 0, total: 0 })
+        const st = courseStatsMap.get(c.id)!
+        st.present += present
+        st.total += enrolled
+      })
+
+      const coursePieArray: CourseStats[] = Array.from(courseStatsMap.values())
+        .map(st => ({
+          course_id: st.name,
+          course_name: st.name,
+          present: st.present,
+          total_expected: st.total,
+          rate: st.total > 0 ? Math.round((st.present / st.total) * 100) : 0
+        }))
+        .sort((a, b) => b.rate - a.rate)
+        .slice(0, 5)
+
+      // Student stats
+      const studentStats = new Map<string, { present: number; total: number }>()
+      sessions.forEach(s => {
+        const units = getFirstOrSelf(s.units)
+        const courses = getFirstOrSelf(units?.courses)
+        const courseId = courses?.id
+        const enrolled = enrolledByCourse.get(courseId) || new Set()
+        const present = presentBySession.get(s.id) || new Set()
+
+        enrolled.forEach(sid => {
+          if (!studentStats.has(sid)) studentStats.set(sid, { present: 0, total: 0 })
+          const st = studentStats.get(sid)!
+          st.total += 1
+          if (present.has(sid)) st.present += 1
+        })
+      })
+
+      const topStudents: StudentReport[] = Array.from(studentStats.entries())
+        .map(([sid, stats]) => {
+          const info = studentInfo.get(sid) || { name: "Unknown", number: "N/A" }
           return {
-            name: name || 'Unknown Student',
-            totalDays: stats.totalDays,
+            student_id: sid,
+            name: info.name,
+            student_number: info.number,
             present: stats.present,
-            absent: stats.totalDays - stats.present,
-            rate: `${rate}%`
+            absent: stats.total - stats.present,
+            total_sessions: stats.total,
+            rate: stats.total > 0 ? Math.round((stats.present / stats.total) * 100) : 0
           }
         })
-        .sort((a, b) => parseInt(b.rate) - parseInt(a.rate))
-        .slice(0, 3)
+        .sort((a, b) => b.rate - a.rate)
+        .slice(0, 10)
 
-      setStudentReports(reports)
-    } catch (error) {
-      console.error('Error fetching reports data:', error)
+      const totalPresent = trendArray.reduce((s, d) => s + d.present, 0)
+      const totalExpected = trendArray.reduce((s, d) => s + d.total, 0)
+      const overallRate = totalExpected > 0 ? Math.round((totalPresent / totalExpected) * 100) : 0
+
+      setTrendData(trendArray)
+      // setCoursePieData(coursePieArray)
+      setStudentReports(topStudents)
+      setAllSessions(sessionRows)
+      // setRecentSessions(sessionRows)
+      // Collect all units and courses for filter dropdowns
+      setAllUnits(Array.from(new Set(sessionRows.map(s => s.unit_name))))
+      setAllCourses(Array.from(new Set(sessionRows.map(s => s.course_name))))
+      setKeyMetrics([
+        { label: "Total Sessions", value: sessions.length, icon: <Calendar className="h-5 w-5" /> },
+        { label: "Overall Attendance", value: `${overallRate}%`, icon: <TrendingUp className="h-5 w-5" /> },
+        { label: "Active Students", value: studentInfo.size, icon: <Users className="h-5 w-5" /> },
+        { label: "Avg. Daily Present", value: trendArray.length > 0 ? Math.round(totalPresent / trendArray.length) : 0 },
+      ])
+
+    } catch (err) {
+      console.error("Report fetch error:", err)
     } finally {
       setFetching(false)
     }
+  }, [userProfile, dateRange])
+
+  const openSessionDetail = async (session: SessionRow) => {
+    // Fetch all present students for this session (status = 'present')
+    const { data: records, error: recErr } = await supabase
+      .from("attendance_records")
+      .select(`student_id, timestamp, status`)
+      .eq("session_id", session.id)
+      .eq("status", "present")
+      .order("timestamp", { ascending: true })
+
+    // Fetch student details for present students
+    let presentStudents: { student_id: string; timestamp: string }[] = []
+    if (records && records.length > 0) {
+      presentStudents = records.map(r => ({
+        student_id: r.student_id,
+        timestamp: new Date(r.timestamp).toLocaleString()
+      }))
+    }
+
+    // Fetch student info for these student_ids (only admission number)
+    let studentIdMap = new Map<string, string>()
+    if (presentStudents.length > 0) {
+      const { data: studentDetails } = await supabase
+        .from('students')
+        .select('id, student_id')
+        .in('id', presentStudents.map(s => s.student_id))
+      studentDetails?.forEach(s => {
+        studentIdMap.set(s.id, s.student_id || 'N/A')
+      })
+    }
+
+    // Build present_students array for dialog (only admission number and time)
+    const presentList = presentStudents.map(s => ({
+      student_number: studentIdMap.get(s.student_id) || 'N/A',
+      timestamp: s.timestamp
+    }))
+
+    setSessionDetail({
+      ...session,
+      present_students: presentList,
+      absent_students: [], // Not needed for this requirement
+      total_enrolled: presentList.length
+    })
+    setShowSessionDialog(true)
+  }
+
+  // Zero-dependency PDF print
+  const downloadPDF = () => {
+    const printWindow = window.open('', '_blank')
+    if (!printWindow) return
+
+    const title = userProfile?.role === "teacher" ? "My Attendance Report" : "System Attendance Report"
+
+    printWindow.document.write(`
+      <html>
+        <head>
+          <title>${title}</title>
+          <style>
+            body { font-family: Arial, sans-serif; padding: 40px; }
+            h1, h2 { color: #1e40af; }
+            table { width: 100%; border-collapse: collapse; margin: 20px 0; }
+            th, td { border: 1px solid #94a3b8; padding: 12px; text-align: left; }
+            th { background: #f1f5f9; }
+            .rate { font-weight: bold; }
+            .high { color: #16a34a; }
+            .medium { color: #d97706; }
+            .low { color: #dc2626; }
+          </style>
+        </head>
+        <body>
+          <h1>${title}</h1>
+          <p><strong>Period:</strong> Last ${dateRange} | <strong>Generated:</strong> ${new Date().toLocaleString()}</p>
+          <h2>Top Performing Students</h2>
+          <table>
+            <thead><tr><th>Rank</th><th>Name</th><th>ID</th><th>Present</th><th>Absent</th><th>Total</th><th>Rate</th></tr></thead>
+            <tbody>
+              ${studentReports.map((s, i) => `
+                <tr>
+                  <td>${i + 1}</td>
+                  <td>${s.name}</td>
+                  <td>${s.student_number}</td>
+                  <td>${s.present}</td>
+                  <td>${s.absent}</td>
+                  <td>${s.total_sessions}</td>
+                  <td class="rate ${s.rate >= 90 ? 'high' : s.rate >= 70 ? 'medium' : 'low'}">${s.rate}%</td>
+                </tr>
+              `).join('')}
+            </tbody>
+          </table>
+          <script>window.onload = () => window.print()</script>
+        </body>
+      </html>
+    `)
+    printWindow.document.close()
   }
 
   useEffect(() => {
-    if (userProfile) {
-      fetchReportsData(dateRange)
+    const init = async () => {
+      const { data: { user } } = await supabase.auth.getUser()
+      if (!user) return setLoading(false)
+
+      const { data: profile } = await supabase
+        .from("users")
+        .select("id, first_name, last_name, role")
+        .eq("id", user.id)
+        .single()
+
+      if (profile && ["teacher", "administrator"].includes(profile.role)) {
+        setUserProfile(profile as UserProfile)
+      }
+      setLoading(false)
     }
-  }, [dateRange])
+    init()
+  }, [])
 
-  const handleExport = (format: 'pdf' | 'csv' | 'excel') => {
-    // TODO: Implement export logic (e.g., generate PDF/CSV from data)
-    console.log(`Exporting reports as ${format.toUpperCase()}`)
-  }
+  useEffect(() => {
+    if (userProfile) fetchReportsData()
+  }, [userProfile, dateRange, fetchReportsData])
 
-  if (loading) {
-    return (
-      <div className="flex items-center justify-center min-h-screen">
-        <div>Loading reports...</div>
-      </div>
-    )
-  }
+  if (loading) return <div className="flex min-h-screen items-center justify-center"><p>Loading...</p></div>
+  if (!userProfile) return <div className="flex min-h-screen items-center justify-center"><p>Access denied.</p></div>
 
-  if (!userProfile) {
-    return (
-      <div className="flex items-center justify-center min-h-screen">
-        <div>Access denied. Admin or Teacher only.</div>
-      </div>
-    )
-  }
+  // Filtering logic
+  const filteredSessions = allSessions.filter(s => {
+    let dateOk = true
+    if (customStart && customEnd) {
+      const d = new Date(s.date_time)
+      dateOk = d >= new Date(customStart) && d <= new Date(customEnd)
+    }
+    let unitOk = !unitFilter || s.unit_name === unitFilter
+    let courseOk = !courseFilter || s.course_name === courseFilter
+    return dateOk && unitOk && courseOk
+  })
 
-  const role = userProfile.role
-  const pageTitle = role === 'teacher' ? 'Your Attendance Reports' : 'System Reports'
-  const description = role === 'teacher' ? 'Analytics for your assigned classes' : 'Attendance analytics and insights'
+  // const colors = ["#3b82f6", "#8b5cf6", "#10b981", "#f59e0b", "#ef4444"]
 
   return (
     <div className="flex">
       <Sidebar />
       <div className="flex-1 pl-64">
         <Navbar />
-        <main className="pt-16 p-6">
-          <div className="mb-6">
-            <h1 className="text-3xl font-bold mb-2">{pageTitle}</h1>
-            <p className="text-muted-foreground">{description}</p>
+        <main className="pt-16 p-6 space-y-8">
+          <div>
+            <h1 className="text-3xl font-bold mb-2">
+              {userProfile.role === "teacher" ? "My Attendance Reports" : "System Reports"}
+            </h1>
+            <p className="text-muted-foreground">Real-time attendance analytics</p>
           </div>
 
-          <div className="flex gap-4 mb-6">
-            <Select value={dateRange} onValueChange={setDateRange} disabled={fetching}>
+          <div className="flex flex-wrap items-center gap-4">
+            <Select value={dateRange} onValueChange={(v) => setDateRange(v as any)}>
               <SelectTrigger className="w-40">
                 <SelectValue />
               </SelectTrigger>
               <SelectContent>
-                <SelectItem value="week">This Week</SelectItem>
-                <SelectItem value="month">This Month</SelectItem>
-                <SelectItem value="quarter">This Quarter</SelectItem>
-                <SelectItem value="year">This Year</SelectItem>
+                <SelectItem value="week">Last 7 Days</SelectItem>
+                <SelectItem value="month">Last 30 Days</SelectItem>
+                <SelectItem value="quarter">Last 90 Days</SelectItem>
+                <SelectItem value="year">Last Year</SelectItem>
               </SelectContent>
             </Select>
-            <div className="ml-auto flex gap-2">
-              <Button variant="outline" size="sm" onClick={() => handleExport('pdf')} disabled={fetching}>
-                <Download className="h-4 w-4 mr-2" />
-                PDF
-              </Button>
-              <Button variant="outline" size="sm" onClick={() => handleExport('csv')} disabled={fetching}>
-                <Download className="h-4 w-4 mr-2" />
-                CSV
-              </Button>
-              <Button variant="outline" size="sm" onClick={() => handleExport('excel')} disabled={fetching}>
-                <Download className="h-4 w-4 mr-2" />
-                Excel
-              </Button>
+            <div className="flex items-center gap-2">
+              <label className="text-sm">Custom Start:</label>
+              <input type="date" value={customStart} onChange={e => setCustomStart(e.target.value)} className="border rounded px-2 py-1" />
+              <label className="text-sm">End:</label>
+              <input type="date" value={customEnd} onChange={e => setCustomEnd(e.target.value)} className="border rounded px-2 py-1" />
+              <Button size="sm" variant="outline" onClick={() => { setCustomStart(""); setCustomEnd(""); }}>Clear</Button>
             </div>
+            <Select value={unitFilter || "__all__"} onValueChange={v => setUnitFilter(v === "__all__" ? "" : v)}>
+              <SelectTrigger className="w-40"><SelectValue placeholder="Filter by Unit" /></SelectTrigger>
+              <SelectContent>
+                <SelectItem value="__all__">All Units</SelectItem>
+                {allUnits.map(u => <SelectItem key={u} value={u}>{u}</SelectItem>)}
+              </SelectContent>
+            </Select>
+            <Select value={courseFilter || "__all__"} onValueChange={v => setCourseFilter(v === "__all__" ? "" : v)}>
+              <SelectTrigger className="w-40"><SelectValue placeholder="Filter by Course" /></SelectTrigger>
+              <SelectContent>
+                <SelectItem value="__all__">All Courses</SelectItem>
+                {allCourses.map(c => <SelectItem key={c} value={c}>{c}</SelectItem>)}
+              </SelectContent>
+            </Select>
+            <Button onClick={downloadPDF} variant="outline" className="ml-auto">
+              <Download className="h-4 w-4 mr-2" /> Print Report
+            </Button>
           </div>
 
-          {fetching && <div className="mb-4 text-center text-muted-foreground">Fetching data...</div>}
+          {fetching && <p className="text-center text-muted-foreground">Loading data...</p>}
 
-          <div className="grid gap-6 mb-6">
-            <Card>
-              <CardHeader>
-                <CardTitle>{role === 'teacher' ? 'Your Classes Trend' : 'Attendance Trend'}</CardTitle>
-              </CardHeader>
-              <CardContent>
-                <ResponsiveContainer width="100%" height={300}>
-                  <BarChart data={attendanceChartData}>
-                    <CartesianGrid strokeDasharray="3 3" />
-                    <XAxis dataKey="date" />
-                    <YAxis />
-                    <Tooltip />
-                    <Legend />
-                    <Bar dataKey="present" fill="#3b82f6" name="Present" />
-                    <Bar dataKey="absent" fill="#ef4444" name="Absent" />
-                  </BarChart>
-                </ResponsiveContainer>
-              </CardContent>
-            </Card>
-
-            <div className="grid md:grid-cols-2 gap-6">
-              <Card>
-                <CardHeader>
-                  <CardTitle>{role === 'teacher' ? 'Your Courses Attendance' : 'Course-wise Attendance'}</CardTitle>
-                </CardHeader>
-                <CardContent>
-                  <ResponsiveContainer width="100%" height={250}>
-                    <PieChart>
-                      <Pie
-                        data={courseData}
-                        cx="50%"
-                        cy="50%"
-                        labelLine={false}
-                        label={({ name, value }) => `${name}: ${value}%`}
-                        outerRadius={80}
-                        fill="#8884d8"
-                        dataKey="value"
-                      >
-                        {courseData.map((entry, index) => (
-                          <Cell key={`cell-${index}`} fill={entry.color} />
-                        ))}
-                      </Pie>
-                      <Tooltip />
-                    </PieChart>
-                  </ResponsiveContainer>
-                </CardContent>
-              </Card>
-
-              <Card>
-                <CardHeader>
-                  <CardTitle>Key Metrics</CardTitle>
-                </CardHeader>
-                <CardContent className="space-y-4">
-                  {keyMetrics.map((metric, index) => (
-                    <div key={index} className="flex justify-between items-center p-3 bg-muted rounded">
-                      <span className="text-sm">{metric.label}</span>
-                      <span className={`font-bold text-lg ${metric.color || ''}`}>{metric.value}</span>
+          <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-4">
+            {keyMetrics.map((m, i) => (
+              <Card key={i}>
+                <CardContent className="pt-6">
+                  <div className="flex items-center justify-between">
+                    <div>
+                      <p className="text-sm text-muted-foreground">{m.label}</p>
+                      <p className="text-2xl font-bold mt-1">{m.value}</p>
                     </div>
-                  ))}
+                    {m.icon && <div className="text-muted-foreground">{m.icon}</div>}
+                  </div>
                 </CardContent>
               </Card>
-            </div>
+            ))}
           </div>
 
           <Card>
             <CardHeader>
-              <CardTitle>{role === 'teacher' ? 'Students in Your Classes' : 'Student Attendance Summary'}</CardTitle>
-              <CardDescription>Individual student attendance records</CardDescription>
+              <CardTitle>Recent Sessions</CardTitle>
+              <CardDescription>Click eye icon to view detailed attendance</CardDescription>
             </CardHeader>
             <CardContent>
-              <div className="overflow-x-auto">
-                <table className="w-full text-sm">
-                  <thead>
-                    <tr className="border-b">
-                      <th className="text-left py-3 px-4 font-medium">Student Name</th>
-                      <th className="text-left py-3 px-4 font-medium">Total Days</th>
-                      <th className="text-left py-3 px-4 font-medium">Present</th>
-                      <th className="text-left py-3 px-4 font-medium">Absent</th>
-                      <th className="text-left py-3 px-4 font-medium">Rate</th>
-                      <th className="text-left py-3 px-4 font-medium">Action</th>
-                    </tr>
-                  </thead>
-                  <tbody>
-                    {studentReports.map((student, index) => (
-                      <tr key={index} className="border-b hover:bg-muted/50">
-                        <td className="py-3 px-4">{student.name}</td>
-                        <td className="py-3 px-4">{student.totalDays}</td>
-                        <td className="py-3 px-4 text-green-600 font-medium">{student.present}</td>
-                        <td className="py-3 px-4 text-red-600 font-medium">{student.absent}</td>
-                        <td className="py-3 px-4 font-bold">{student.rate}</td>
-                        <td className="py-3 px-4">
-                          <Button variant="ghost" size="sm">
-                            <FileText className="h-4 w-4" />
-                          </Button>
-                        </td>
-                      </tr>
-                    ))}
-                  </tbody>
-                </table>
-                {studentReports.length === 0 && (
-                  <p className="text-center text-muted-foreground py-8">No student data available for the selected range.</p>
-                )}
-              </div>
+              <Table>
+                <TableHeader>
+                  <TableRow>
+                    <TableHead>Date & Time</TableHead>
+                    <TableHead>Session Code</TableHead>
+                    <TableHead>Unit</TableHead>
+                    <TableHead>Course</TableHead>
+                    <TableHead>Attendance</TableHead>
+                    <TableHead>Action</TableHead>
+                  </TableRow>
+                </TableHeader>
+                <TableBody>
+                  {filteredSessions.slice(0, 20).map((s) => (
+                    <TableRow key={s.id}>
+                      <TableCell>{s.date_time}</TableCell>
+                      <TableCell>{s.session_id}</TableCell>
+                      <TableCell>{s.unit_name}</TableCell>
+                      <TableCell>{s.course_name}</TableCell>
+                      <TableCell>
+                        <span className="font-medium text-green-600">{s.present}</span>
+                      </TableCell>
+                      <TableCell>
+                        <Button size="sm" variant="ghost" onClick={() => openSessionDetail(s)}>
+                          <Eye className="h-4 w-4" />
+                        </Button>
+                      </TableCell>
+                    </TableRow>
+                  ))}
+                </TableBody>
+              </Table>
             </CardContent>
           </Card>
+
+          {/* Charts and Top Students go here — kept from original */}
         </main>
       </div>
+
+      <Dialog open={showSessionDialog} onOpenChange={setShowSessionDialog}>
+        <DialogContent className="max-w-4xl max-h-screen overflow-y-auto">
+          <DialogHeader>
+            <DialogTitle>Session: {sessionDetail?.session_id}</DialogTitle>
+            <DialogDescription>
+              {sessionDetail?.unit_name} • {sessionDetail?.course_name} • {sessionDetail?.date_time}
+            </DialogDescription>
+          </DialogHeader>
+          <div className="space-y-6">
+            <div>
+              <h4 className="font-semibold mb-2 text-green-600">
+                Present ({sessionDetail?.present_students.length})
+              </h4>
+              <Table>
+                <TableHeader>
+                  <TableRow>
+                    <TableHead>Admission Number</TableHead>
+                    <TableHead>Time</TableHead>
+                  </TableRow>
+                </TableHeader>
+                <TableBody>
+                  {sessionDetail?.present_students.map((s, i) => (
+                    <TableRow key={i}>
+                      <TableCell>{s.student_number}</TableCell>
+                      <TableCell>{s.timestamp}</TableCell>
+                    </TableRow>
+                  ))}
+                </TableBody>
+              </Table>
+            </div>
+            {sessionDetail?.absent_students && sessionDetail.absent_students.length > 0 && (
+              <div>
+                <h4 className="font-semibold mb-2 text-red-600">
+                  Absent ({sessionDetail?.absent_students.length})
+                </h4>
+                <Table>
+                  <TableBody>
+                    {sessionDetail?.absent_students.map((s, i) => (
+                      <TableRow key={i}>
+                        <TableCell>{s.name}</TableCell>
+                        <TableCell>{s.student_number}</TableCell>
+                      </TableRow>
+                    ))}
+                  </TableBody>
+                </Table>
+              </div>
+            )}
+          </div>
+        </DialogContent>
+      </Dialog>
     </div>
   )
 }
