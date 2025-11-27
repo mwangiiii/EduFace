@@ -486,6 +486,7 @@ export default function CoursesManagementPage() {
 
   const handleTeacherAssignmentSubmit = async (e: React.FormEvent) => {
     e.preventDefault()
+
     setFormError('')
     setFormLoading(true)
 
@@ -503,6 +504,19 @@ export default function CoursesManagementPage() {
 
     if (!teacherAssignmentFormData.start_time || !teacherAssignmentFormData.end_time) {
       setFormError('Please provide start and end times')
+      setFormLoading(false)
+      return
+    }
+
+    // Ensure end time is after start time
+    const toMinutes = (time: string): number => {
+      const [h, m] = time.split(":").map(Number)
+      return h * 60 + m
+    }
+    const startMinutes = toMinutes(teacherAssignmentFormData.start_time)
+    const endMinutes = toMinutes(teacherAssignmentFormData.end_time)
+    if (endMinutes <= startMinutes) {
+      setFormError('End time must be after start time')
       setFormLoading(false)
       return
     }
@@ -688,6 +702,7 @@ export default function CoursesManagementPage() {
       </div>
     )
   }
+  
 
   return (
     <div className="flex">
@@ -1128,10 +1143,10 @@ export default function CoursesManagementPage() {
 
                 <Alert>
                   <AlertCircle className="h-4 w-4" />
-                  <AlertDescription className="text-xs">
+                  {/* <AlertDescription className="text-xs">
                     Multiple teachers can be assigned to the same unit with different schedules and rooms.
                     The system will check for conflicts automatically.
-                  </AlertDescription>
+                  </AlertDescription> */}
                 </Alert>
 
                 <Button type="submit" className="w-full" disabled={formLoading}>

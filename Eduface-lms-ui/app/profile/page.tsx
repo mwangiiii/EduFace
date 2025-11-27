@@ -509,7 +509,7 @@ const handleSubmitEnrollment = async () => {
     setProfile(prev => ({
       ...prev,
       faceEnrolled: true,
-      faceQuality: 0.96,
+      // faceQuality: 0.96,
       lastEnrolled: new Date().toISOString(),
       reEnrollRecommended: false,
     }))
@@ -714,9 +714,9 @@ const handleSubmitEnrollment = async () => {
                       <p className="font-medium">Face Enrolled</p>
                       <p className="text-sm text-muted-foreground">
                         Status: {profile.faceEnrolled ? 'Active' : 'Not Enrolled'}
-                        {profile.faceQuality !== null && profile.faceEnrolled && (
+                        {/* {profile.faceQuality !== null && profile.faceEnrolled && (
                           <span className="ml-2">Quality: {(profile.faceQuality * 100).toFixed(0)}%</span>
-                        )}
+                        )} */}
                         {profile.lastEnrolled && (
                           <span className="ml-2">Last: {new Date(profile.lastEnrolled).toLocaleDateString()}</span>
                         )}

@@ -128,16 +128,16 @@ export default function LoginPage() {
               {loading ? "Signing in..." : "Sign In"}
             </Button>
 
-            <div className="relative">
+            {/* <div className="relative">
               <div className="absolute inset-0 flex items-center">
                 <div className="w-full border-t border-border"></div>
               </div>
               <div className="relative flex justify-center text-xs uppercase">
                 <span className="bg-background px-2 text-muted-foreground">Demo Accounts</span>
               </div>
-            </div>
+            </div> */}
 
-            <div className="space-y-2 text-xs">
+            {/* <div className="space-y-2 text-xs">
               <div className="p-2 rounded bg-muted">
                 <div className="font-semibold">Student: student@school.edu / password</div>
               </div>
@@ -147,7 +147,7 @@ export default function LoginPage() {
               <div className="p-2 rounded bg-muted">
                 <div className="font-semibold">Admin: admin@school.edu / password</div>
               </div>
-            </div>
+            </div> */}
           </form>
 
           <div className="mt-6 text-center text-sm">
