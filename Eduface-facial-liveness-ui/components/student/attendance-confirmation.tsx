@@ -80,11 +80,11 @@ export default function AttendanceConfirmation({
         {/* Motivational Header */}
         <div className="space-y-1">
           <h2 className="text-xl font-bold text-gray-900 dark:text-white">
-            Great job—marked present! 🎉
+            marked present!
           </h2>
-          <p className="text-sm text-gray-600 dark:text-gray-300" lang="sw">
+          {/* <p className="text-sm text-gray-600 dark:text-gray-300" lang="sw">
             Mahudhurio yako imesajiliwa vizuri.
-          </p>
+          </p> */}
           {isLowConfidence && (
             <p className="text-xs text-amber-700 dark:text-amber-300 bg-amber-50 dark:bg-amber-900/20 px-2 py-1 rounded-md">
               Match was close—want to snap again for peace of mind?
@@ -137,10 +137,10 @@ export default function AttendanceConfirmation({
             <section aria-labelledby="metrics-heading">
               <h3 id="metrics-heading" className="sr-only">Verification Metrics</h3>
               <div className="flex items-center gap-3">
-                <div className="w-10 h-10 bg-cyan-100 dark:bg-cyan-900/50 rounded-full flex items-center justify-center flex-shrink-0">
+                {/* <div className="w-10 h-10 bg-cyan-100 dark:bg-cyan-900/50 rounded-full flex items-center justify-center flex-shrink-0">
                   <ShieldCheck className="w-5 h-5 text-cyan-600 dark:text-cyan-300" aria-hidden="true" />
-                </div>
-                <div className="flex-1">
+                </div> */}
+                {/* <div className="flex-1">
                   <p className="text-xs font-medium text-gray-500 dark:text-gray-400">Match Strength</p>
                   <div className="w-full bg-gray-200 dark:bg-gray-700 rounded-full h-2">
                     <div 
@@ -156,7 +156,7 @@ export default function AttendanceConfirmation({
                     {pct(data.confidence)}% {data.avgConfidence != null && `• Avg: ${pct(data.avgConfidence)} (${data.matchCount}/${data.totalComparisons})`}
                     {data.livenessScore != null && ` • Liveness: ${pct(data.livenessScore)}%`}
                   </p>
-                </div>
+                </div> */}
               </div>
             </section>
 

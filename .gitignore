@@ -18,3 +18,17 @@ test_model.h5
 *.h5
 sample_training_batch.png
 debug_preproc
+
+debug_preproc_facial_recognition.ipynbcate_150911_3_frontal_alt2_06e2acc5.jpg
+debug_preproc_cate_150911_10_profile_4980b88d.jpg
+debug_preproc_njoki_1000000_5_frontal_7bdb0772.jpg
+debug_preproc_njoki_1000000_13_frontal_alt_79eb2a11.jpg
+debug_preproc_Barasa_Conslata_Nanzala_151097_10_frontal_7e1b535f.jpg
+diagnostic_report.csv
+facial_recognition.ipynb
+Procfile
+python-version
+setup-railway.sh
+
+
+

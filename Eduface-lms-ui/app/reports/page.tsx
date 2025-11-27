@@ -1,9 +1,4 @@
 "use client"
-// Utility to get first element if array, or self if not
-function getFirstOrSelf<T>(val: T | T[] | undefined): T | undefined {
-  if (Array.isArray(val)) return val[0]
-  return val
-}
 
 import { Sidebar } from "@/components/sidebar"
 import { Navbar } from "@/components/navbar"
@@ -26,8 +21,26 @@ import {
   Cell,
 } from "recharts"
 import { Download, Calendar, TrendingUp, Users, Eye } from "lucide-react"
+
 import { useState, useEffect, useCallback } from "react"
 import { supabase } from "@/lib/supabaseClient"
+
+// Utility to get first element if array, or self if not
+function getFirstOrSelf<T>(val: T | T[] | undefined): T | undefined {
+  if (Array.isArray(val)) return val[0]
+  return val
+}
+
+// AllocationOption type for teacher allocations (from live-attendance)
+interface AllocationOption {
+  id: string
+  course_name: string
+  unit_name: string
+  room?: string
+  unit_id: string
+  course_id: string
+  schedule: any
+}
 
 interface UserProfile {
   id: string
@@ -89,10 +102,8 @@ interface SessionRow {
   enrolled: number
 }
 
-
-// Wrap all logic in a component
+// Main ReportsPage component
 export default function ReportsPage() {
-    // ...existing code...
   const [userProfile, setUserProfile] = useState<UserProfile | null>(null)
   const [dateRange, setDateRange] = useState<"week" | "month" | "quarter" | "year">("month")
   const [customStart, setCustomStart] = useState<string>("")
@@ -105,17 +116,14 @@ export default function ReportsPage() {
   const [showSessionDialog, setShowSessionDialog] = useState(false)
 
   const [trendData, setTrendData] = useState<AttendanceTrend[]>([])
-  // const [coursePieData, setCoursePieData] = useState<CourseStats[]>([])
   const [studentReports, setStudentReports] = useState<StudentReport[]>([])
   const [keyMetrics, setKeyMetrics] = useState<KeyMetric[]>([])
-  // const [recentSessions, setRecentSessions] = useState<SessionRow[]>([])
   const [allSessions, setAllSessions] = useState<SessionRow[]>([])
   const [allUnits, setAllUnits] = useState<string[]>([])
   const [allCourses, setAllCourses] = useState<string[]>([])
+  const [allocations, setAllocations] = useState<AllocationOption[]>([])
 
-
-
-  const getDateRangeFilter = () => {
+  const getDateRangeFilter = useCallback(() => {
     if (customStart && customEnd) {
       return { start: new Date(customStart).toISOString(), end: new Date(customEnd).toISOString() }
     }
@@ -138,7 +146,62 @@ export default function ReportsPage() {
         startDate = new Date(now.getTime() - 30 * 24 * 60 * 60 * 1000)
     }
     return { start: startDate.toISOString(), end: now.toISOString() }
-  }
+  }, [dateRange, customStart, customEnd])
+
+  // Fetch teacher allocations
+  const fetchTeacherAllocations = useCallback(async (userId: string) => {
+    try {
+      const { data: teacher } = await supabase
+        .from('teachers')
+        .select('id')
+        .eq('user_id', userId)
+        .single()
+
+      if (!teacher) {
+        setAllocations([])
+        return
+      }
+
+      const { data: assignments } = await supabase
+        .from('unit_teachers')
+        .select(`
+          id,
+          room,
+          schedule,
+          unit_id,
+          units!inner (
+            id,
+            name,
+            courses!inner (
+              id,
+              name
+            )
+          )
+        `)
+        .eq('teacher_id', teacher.id)
+
+      const allocationOptions = (assignments || [])
+        .map((a: any) => {
+          const unit = a.units
+          if (!unit) return undefined
+          return {
+            id: a.id,
+            course_name: unit.courses?.name || 'Unknown Course',
+            unit_name: unit.name || 'Unknown Unit',
+            room: a.room ?? undefined,
+            unit_id: a.unit_id,
+            course_id: unit.courses?.id || '',
+            schedule: a.schedule || {}
+          } as AllocationOption
+        })
+        .filter((a): a is AllocationOption => a !== undefined)
+
+      setAllocations(allocationOptions)
+    } catch (err) {
+      console.error("Error fetching teacher allocations:", err)
+      setAllocations([])
+    }
+  }, [])
 
   const fetchReportsData = useCallback(async () => {
     if (!userProfile) return
@@ -148,15 +211,10 @@ export default function ReportsPage() {
       const { start, end } = getDateRangeFilter()
       const isTeacher = userProfile.role === "teacher"
 
-      // 1. Get teacher's units
+      // 1. Get teacher's units using allocations state
       let allowedUnitIds: string[] = []
       if (isTeacher) {
-        const { data: assignments } = await supabase
-          .from("unit_teachers")
-          .select("unit_id")
-          .eq("teacher_id", userProfile.id)
-
-        allowedUnitIds = assignments?.map(a => a.unit_id) || []
+        allowedUnitIds = allocations.map(a => a.unit_id)
       }
 
       // 2. Fetch completed sessions
@@ -184,32 +242,48 @@ export default function ReportsPage() {
 
       if (isTeacher && allowedUnitIds.length > 0) {
         sessionsQuery = sessionsQuery.in("unit_id", allowedUnitIds)
-      }
-
-      const { data: sessions, error: sessErr } = await sessionsQuery
-      if (sessErr) throw sessErr
-      if (!sessions || sessions.length === 0) {
+      } else if (isTeacher && allowedUnitIds.length === 0) {
+        // If teacher has no allocations, show nothing
         setTrendData([])
-        // setCoursePieData([])
         setStudentReports([])
-        // setRecentSessions([])
         setKeyMetrics([
           { label: "Total Sessions", value: 0, icon: <Calendar className="h-5 w-5" /> },
           { label: "Overall Attendance", value: "0%", icon: <TrendingUp className="h-5 w-5" /> },
           { label: "Active Students", value: 0, icon: <Users className="h-5 w-5" /> },
           { label: "Avg. Daily Present", value: 0 },
         ])
+        setAllSessions([])
+        setAllUnits([])
+        setAllCourses([])
+        setFetching(false)
+        return
+      }
+
+      const { data: sessions, error: sessErr } = await sessionsQuery
+      if (sessErr) throw sessErr
+      
+      if (!sessions || sessions.length === 0) {
+        setTrendData([])
+        setStudentReports([])
+        setKeyMetrics([
+          { label: "Total Sessions", value: 0, icon: <Calendar className="h-5 w-5" /> },
+          { label: "Overall Attendance", value: "0%", icon: <TrendingUp className="h-5 w-5" /> },
+          { label: "Active Students", value: 0, icon: <Users className="h-5 w-5" /> },
+          { label: "Avg. Daily Present", value: 0 },
+        ])
+        setAllSessions([])
+        setAllUnits([])
+        setAllCourses([])
         setFetching(false)
         return
       }
 
       const sessionIds = sessions.map(s => s.id)
-      // Handle units and courses as arrays (Supabase join result)
       const courseIds = [...new Set(sessions.map(s => {
         const units = getFirstOrSelf(s.units)
         const courses = getFirstOrSelf(units?.courses)
         return courses?.id
-      }).filter(Boolean))]
+      }).filter(Boolean) as string[])]
 
       // 3. Fetch attendance records
       const { data: records } = await supabase
@@ -240,21 +314,27 @@ export default function ReportsPage() {
         const student = getFirstOrSelf(en.students)
         const user = getFirstOrSelf(student?.users)
         const sid = student?.id
-        studentInfo.set(sid, {
-          name: `${user?.first_name || ''} ${user?.last_name || ''}`.trim(),
-          number: student?.student_id
-        })
-        if (!enrolledByCourse.has(en.course_id)) enrolledByCourse.set(en.course_id, new Set())
-        if (sid) enrolledByCourse.get(en.course_id)!.add(sid)
+        if (sid) {
+          studentInfo.set(sid, {
+            name: `${user?.first_name || ''} ${user?.last_name || ''}`.trim(),
+            number: student?.student_id || 'N/A'
+          })
+          if (!enrolledByCourse.has(en.course_id)) {
+            enrolledByCourse.set(en.course_id, new Set())
+          }
+          enrolledByCourse.get(en.course_id)!.add(sid)
+        }
       })
 
       const presentBySession = new Map<string, Set<string>>()
       records?.forEach(r => {
-        if (!presentBySession.has(r.session_id)) presentBySession.set(r.session_id, new Set())
+        if (!presentBySession.has(r.session_id)) {
+          presentBySession.set(r.session_id, new Set())
+        }
         presentBySession.get(r.session_id)!.add(r.student_id)
       })
 
-      // Build recent sessions list
+      // Build session rows
       const sessionRows: SessionRow[] = sessions.map(s => {
         const units = getFirstOrSelf(s.units)
         const courses = getFirstOrSelf(units?.courses)
@@ -282,7 +362,9 @@ export default function ReportsPage() {
         const enrolled = enrolledByCourse.get(courseId)?.size || 0
         const present = presentBySession.get(s.id)?.size || 0
 
-        if (!daily.has(dateKey)) daily.set(dateKey, { present: 0, total: 0 })
+        if (!daily.has(dateKey)) {
+          daily.set(dateKey, { present: 0, total: 0 })
+        }
         const d = daily.get(dateKey)!
         d.present += present
         d.total += enrolled
@@ -298,31 +380,6 @@ export default function ReportsPage() {
         }))
         .sort((a, b) => new Date(a.date).getTime() - new Date(b.date).getTime())
 
-      // Course stats
-      const courseStatsMap = new Map<string, { name: string; present: number; total: number }>()
-      sessions.forEach(s => {
-        const units = getFirstOrSelf(s.units)
-        const c = getFirstOrSelf(units?.courses)
-        if (!c) return
-        const enrolled = enrolledByCourse.get(c.id)?.size || 0
-        const present = presentBySession.get(s.id)?.size || 0
-        if (!courseStatsMap.has(c.id)) courseStatsMap.set(c.id, { name: c.name, present: 0, total: 0 })
-        const st = courseStatsMap.get(c.id)!
-        st.present += present
-        st.total += enrolled
-      })
-
-      const coursePieArray: CourseStats[] = Array.from(courseStatsMap.values())
-        .map(st => ({
-          course_id: st.name,
-          course_name: st.name,
-          present: st.present,
-          total_expected: st.total,
-          rate: st.total > 0 ? Math.round((st.present / st.total) * 100) : 0
-        }))
-        .sort((a, b) => b.rate - a.rate)
-        .slice(0, 5)
-
       // Student stats
       const studentStats = new Map<string, { present: number; total: number }>()
       sessions.forEach(s => {
@@ -333,7 +390,9 @@ export default function ReportsPage() {
         const present = presentBySession.get(s.id) || new Set()
 
         enrolled.forEach(sid => {
-          if (!studentStats.has(sid)) studentStats.set(sid, { present: 0, total: 0 })
+          if (!studentStats.has(sid)) {
+            studentStats.set(sid, { present: 0, total: 0 })
+          }
           const st = studentStats.get(sid)!
           st.total += 1
           if (present.has(sid)) st.present += 1
@@ -361,11 +420,8 @@ export default function ReportsPage() {
       const overallRate = totalExpected > 0 ? Math.round((totalPresent / totalExpected) * 100) : 0
 
       setTrendData(trendArray)
-      // setCoursePieData(coursePieArray)
       setStudentReports(topStudents)
       setAllSessions(sessionRows)
-      // setRecentSessions(sessionRows)
-      // Collect all units and courses for filter dropdowns
       setAllUnits(Array.from(new Set(sessionRows.map(s => s.unit_name))))
       setAllCourses(Array.from(new Set(sessionRows.map(s => s.course_name))))
       setKeyMetrics([
@@ -380,51 +436,56 @@ export default function ReportsPage() {
     } finally {
       setFetching(false)
     }
-  }, [userProfile, dateRange])
+  }, [userProfile, allocations, getDateRangeFilter])
 
   const openSessionDetail = async (session: SessionRow) => {
-    // Fetch all present students for this session (status = 'present')
-    const { data: records, error: recErr } = await supabase
-      .from("attendance_records")
-      .select(`student_id, timestamp, status`)
-      .eq("session_id", session.id)
-      .eq("status", "present")
-      .order("timestamp", { ascending: true })
+    try {
+      // Fetch all present students for this session
+      const { data: records, error: recErr } = await supabase
+        .from("attendance_records")
+        .select(`student_id, timestamp, status`)
+        .eq("session_id", session.id)
+        .eq("status", "present")
+        .order("timestamp", { ascending: true })
 
-    // Fetch student details for present students
-    let presentStudents: { student_id: string; timestamp: string }[] = []
-    if (records && records.length > 0) {
-      presentStudents = records.map(r => ({
-        student_id: r.student_id,
-        timestamp: new Date(r.timestamp).toLocaleString()
+      if (recErr) throw recErr
+
+      let presentStudents: { student_id: string; timestamp: string }[] = []
+      if (records && records.length > 0) {
+        presentStudents = records.map(r => ({
+          student_id: r.student_id,
+          timestamp: new Date(r.timestamp).toLocaleString()
+        }))
+      }
+
+      // Fetch student info
+      let studentIdMap = new Map<string, string>()
+      if (presentStudents.length > 0) {
+        const { data: studentDetails } = await supabase
+          .from('students')
+          .select('id, student_id')
+          .in('id', presentStudents.map(s => s.student_id))
+        
+        studentDetails?.forEach(s => {
+          studentIdMap.set(s.id, s.student_id || 'N/A')
+        })
+      }
+
+      const presentList = presentStudents.map(s => ({
+        student_number: studentIdMap.get(s.student_id) || 'N/A',
+        timestamp: s.timestamp
       }))
-    }
 
-    // Fetch student info for these student_ids (only admission number)
-    let studentIdMap = new Map<string, string>()
-    if (presentStudents.length > 0) {
-      const { data: studentDetails } = await supabase
-        .from('students')
-        .select('id, student_id')
-        .in('id', presentStudents.map(s => s.student_id))
-      studentDetails?.forEach(s => {
-        studentIdMap.set(s.id, s.student_id || 'N/A')
+      setSessionDetail({
+        ...session,
+        present_students: presentList,
+        absent_students: [],
+        total_enrolled: presentList.length
       })
+      setShowSessionDialog(true)
+    } catch (err) {
+      console.error("Error fetching session details:", err)
     }
-
-    // Build present_students array for dialog (only admission number and time)
-    const presentList = presentStudents.map(s => ({
-      student_number: studentIdMap.get(s.student_id) || 'N/A',
-      timestamp: s.timestamp
-    }))
-
-    setSessionDetail({
-      ...session,
-      present_students: presentList,
-      absent_students: [], // Not needed for this requirement
-      total_enrolled: presentList.length
-    })
-    setShowSessionDialog(true)
   }
 
   // Zero-dependency PDF print
@@ -480,7 +541,10 @@ export default function ReportsPage() {
   useEffect(() => {
     const init = async () => {
       const { data: { user } } = await supabase.auth.getUser()
-      if (!user) return setLoading(false)
+      if (!user) {
+        setLoading(false)
+        return
+      }
 
       const { data: profile } = await supabase
         .from("users")
@@ -490,18 +554,36 @@ export default function ReportsPage() {
 
       if (profile && ["teacher", "administrator"].includes(profile.role)) {
         setUserProfile(profile as UserProfile)
+        if (profile.role === "teacher") {
+          await fetchTeacherAllocations(profile.id)
+        }
       }
       setLoading(false)
     }
     init()
-  }, [])
+  }, [fetchTeacherAllocations])
 
   useEffect(() => {
-    if (userProfile) fetchReportsData()
-  }, [userProfile, dateRange, fetchReportsData])
+    if (userProfile && (userProfile.role !== "teacher" || allocations.length > 0)) {
+      fetchReportsData()
+    }
+  }, [userProfile, allocations, fetchReportsData])
 
-  if (loading) return <div className="flex min-h-screen items-center justify-center"><p>Loading...</p></div>
-  if (!userProfile) return <div className="flex min-h-screen items-center justify-center"><p>Access denied.</p></div>
+  if (loading) {
+    return (
+      <div className="flex min-h-screen items-center justify-center">
+        <p>Loading...</p>
+      </div>
+    )
+  }
+  
+  if (!userProfile) {
+    return (
+      <div className="flex min-h-screen items-center justify-center">
+        <p>Access denied.</p>
+      </div>
+    )
+  }
 
   // Filtering logic
   const filteredSessions = allSessions.filter(s => {
@@ -510,18 +592,17 @@ export default function ReportsPage() {
       const d = new Date(s.date_time)
       dateOk = d >= new Date(customStart) && d <= new Date(customEnd)
     }
-    let unitOk = !unitFilter || s.unit_name === unitFilter
-    let courseOk = !courseFilter || s.course_name === courseFilter
+    const unitOk = !unitFilter || s.unit_name === unitFilter
+    const courseOk = !courseFilter || s.course_name === courseFilter
     return dateOk && unitOk && courseOk
   })
-
-  // const colors = ["#3b82f6", "#8b5cf6", "#10b981", "#f59e0b", "#ef4444"]
 
   return (
     <div className="flex">
       <Sidebar />
       <div className="flex-1 pl-64">
         <Navbar />
+
         <main className="pt-16 p-6 space-y-8">
           <div>
             <h1 className="text-3xl font-bold mb-2">
@@ -544,20 +625,43 @@ export default function ReportsPage() {
             </Select>
             <div className="flex items-center gap-2">
               <label className="text-sm">Custom Start:</label>
-              <input type="date" value={customStart} onChange={e => setCustomStart(e.target.value)} className="border rounded px-2 py-1" />
+              <input 
+                type="date" 
+                value={customStart} 
+                onChange={e => setCustomStart(e.target.value)} 
+                className="border rounded px-2 py-1" 
+              />
               <label className="text-sm">End:</label>
-              <input type="date" value={customEnd} onChange={e => setCustomEnd(e.target.value)} className="border rounded px-2 py-1" />
-              <Button size="sm" variant="outline" onClick={() => { setCustomStart(""); setCustomEnd(""); }}>Clear</Button>
+              <input 
+                type="date" 
+                value={customEnd} 
+                onChange={e => setCustomEnd(e.target.value)} 
+                className="border rounded px-2 py-1" 
+              />
+              <Button 
+                size="sm" 
+                variant="outline" 
+                onClick={() => { 
+                  setCustomStart("")
+                  setCustomEnd("")
+                }}
+              >
+                Clear
+              </Button>
             </div>
             <Select value={unitFilter || "__all__"} onValueChange={v => setUnitFilter(v === "__all__" ? "" : v)}>
-              <SelectTrigger className="w-40"><SelectValue placeholder="Filter by Unit" /></SelectTrigger>
+              <SelectTrigger className="w-40">
+                <SelectValue placeholder="Filter by Unit" />
+              </SelectTrigger>
               <SelectContent>
                 <SelectItem value="__all__">All Units</SelectItem>
                 {allUnits.map(u => <SelectItem key={u} value={u}>{u}</SelectItem>)}
               </SelectContent>
             </Select>
             <Select value={courseFilter || "__all__"} onValueChange={v => setCourseFilter(v === "__all__" ? "" : v)}>
-              <SelectTrigger className="w-40"><SelectValue placeholder="Filter by Course" /></SelectTrigger>
+              <SelectTrigger className="w-40">
+                <SelectValue placeholder="Filter by Course" />
+              </SelectTrigger>
               <SelectContent>
                 <SelectItem value="__all__">All Courses</SelectItem>
                 {allCourses.map(c => <SelectItem key={c} value={c}>{c}</SelectItem>)}
@@ -624,8 +728,6 @@ export default function ReportsPage() {
               </Table>
             </CardContent>
           </Card>
-
-          {/* Charts and Top Students go here — kept from original */}
         </main>
       </div>
 
@@ -640,7 +742,7 @@ export default function ReportsPage() {
           <div className="space-y-6">
             <div>
               <h4 className="font-semibold mb-2 text-green-600">
-                Present ({sessionDetail?.present_students.length})
+                Present ({sessionDetail?.present_students.length || 0})
               </h4>
               <Table>
                 <TableHeader>
@@ -659,23 +761,6 @@ export default function ReportsPage() {
                 </TableBody>
               </Table>
             </div>
-            {sessionDetail?.absent_students && sessionDetail.absent_students.length > 0 && (
-              <div>
-                <h4 className="font-semibold mb-2 text-red-600">
-                  Absent ({sessionDetail?.absent_students.length})
-                </h4>
-                <Table>
-                  <TableBody>
-                    {sessionDetail?.absent_students.map((s, i) => (
-                      <TableRow key={i}>
-                        <TableCell>{s.name}</TableCell>
-                        <TableCell>{s.student_number}</TableCell>
-                      </TableRow>
-                    ))}
-                  </TableBody>
-                </Table>
-              </div>
-            )}
           </div>
         </DialogContent>
       </Dialog>

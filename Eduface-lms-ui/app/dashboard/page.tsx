@@ -43,6 +43,69 @@ export default function DashboardPage() {
   const [presentToday, setPresentToday] = useState(0)
   const [absentToday, setAbsentToday] = useState(0)
   const [attendanceRate, setAttendanceRate] = useState("0%")
+  // For displaying enrolled courses and units
+  const [studentCourses, setStudentCourses] = useState<{
+    course_id: string;
+    course_name: string;
+    units: { unit_id: string; unit_name: string }[];
+  }[]>([])
+    // Fetch enrolled courses and their units for student
+    const fetchStudentCoursesAndUnits = async () => {
+      if (!userProfile) return;
+      try {
+        // Get student's ID from students table
+        const { data: student } = await supabase
+          .from('students')
+          .select('id')
+          .eq('user_id', userProfile.id)
+          .single();
+        if (!student) return;
+
+        // Get enrollments for this student
+        const { data: enrollments } = await supabase
+          .from('enrollments')
+          .select('course_id')
+          .eq('student_id', student.id)
+          .eq('status', 'active');
+        const courseIds = enrollments?.map(e => e.course_id) || [];
+        if (courseIds.length === 0) {
+          setStudentCourses([]);
+          return;
+        }
+
+        // Fetch course details
+        const { data: courses } = await supabase
+          .from('courses')
+          .select('id, course_id, name')
+          .in('id', courseIds);
+        if (!courses) {
+          setStudentCourses([]);
+          return;
+        }
+
+        // Fetch units for these courses
+        const { data: units } = await supabase
+          .from('units')
+          .select('id, unit_id, name, course_id')
+          .in('course_id', courseIds);
+        // Group units by course_id
+        const unitsByCourse: { [key: string]: { unit_id: string; unit_name: string }[] } = {};
+        (units || []).forEach(u => {
+          if (!unitsByCourse[u.course_id]) unitsByCourse[u.course_id] = [];
+          unitsByCourse[u.course_id].push({ unit_id: u.unit_id, unit_name: u.name });
+        });
+
+        // Build the final array
+        const result = courses.map(c => ({
+          course_id: c.course_id,
+          course_name: c.name,
+          units: unitsByCourse[c.id] || []
+        }));
+        setStudentCourses(result);
+      } catch (error) {
+        setStudentCourses([]);
+      }
+    };
   // Teacher states
   const [teacherCoursesCount, setTeacherCoursesCount] = useState(0)
   const [teacherPresentToday, setTeacherPresentToday] = useState(0)
@@ -97,9 +160,14 @@ export default function DashboardPage() {
       setStatsLoading(true)
       try {
         if (userProfile.role === 'student') {
-          await fetchStudentStats()
+          await Promise.all([
+            fetchStudentStats(),
+            fetchStudentCoursesAndUnits(),
+            fetchUpcomingSessionsForStudent()
+          ])
         } else if (userProfile.role === 'teacher') {
           await fetchTeacherStats()
+          await fetchUpcomingSessionsForTeacher()
         } else if (userProfile.role === 'administrator') {
           await fetchAdminStats()
         }
@@ -107,12 +175,6 @@ export default function DashboardPage() {
         console.error('Error fetching stats:', error)
       } finally {
         setStatsLoading(false)
-      }
-
-      if (userProfile.role === 'student') {
-        await fetchUpcomingSessionsForStudent()
-      } else if (userProfile.role === 'teacher') {
-        await fetchUpcomingSessionsForTeacher()
       }
     }
 
@@ -625,9 +687,9 @@ export default function DashboardPage() {
       return <div className="text-center py-8">Loading upcoming classes...</div>
     }
 
-    if (upcomingSessions.length === 0) {
-      return <div className="text-center py-8 text-muted-foreground">No upcoming classes today.</div>
-    }
+    // if (upcomingSessions.length === 0) {
+    //   return <div className="text-center py-8 text-muted-foreground">No upcoming classes today.</div>
+    // }
 
     // Group by date for multi-day view
     const groupedByDate = upcomingSessions.reduce((acc: { [key: string]: UpcomingSession[] }, session) => {
@@ -779,28 +841,44 @@ export default function DashboardPage() {
             })}
           </div>
 
-          {(role === 'student' || role === 'teacher') && (
+          {/* Upcoming Classes section removed as requested */}
+
+          {/* Student: Show enrolled courses and units */}
+          {role === 'student' && studentCourses.length > 0 && (
             <Card className="mb-6">
               <CardHeader>
-                <CardTitle>Upcoming Classes</CardTitle>
-                <CardDescription>
-                  {role === 'student' ? 'Your enrolled courses and units' : 'Your assigned units and courses'}
-                </CardDescription>
+                <CardTitle>Your Enrolled Courses</CardTitle>
+                <CardDescription>Below are your courses</CardDescription>
               </CardHeader>
               <CardContent>
-                {renderUpcomingSessions()}
+                <div className="space-y-6">
+                  {studentCourses.map(course => (
+                    <div key={course.course_id}>
+                      <div className="font-semibold text-lg mb-1">{course.course_name} <span className="text-xs text-muted-foreground">({course.course_id})</span></div>
+                      {course.units.length > 0 ? (
+                        <ul className="list-disc ml-6">
+                          {course.units.map(unit => (
+                            <li key={unit.unit_id} className="text-sm">{unit.unit_name} <span className="text-xs text-muted-foreground">({unit.unit_id})</span></li>
+                          ))}
+                        </ul>
+                      ) : (
+                        <div className="text-sm text-muted-foreground ml-6">No units found for this course.</div>
+                      )}
+                    </div>
+                  ))}
+                </div>
               </CardContent>
             </Card>
           )}
 
-          {role === "student" && (
+          {/* {role === "student" && (
             <Alert>
               <AlertCircle className="h-4 w-4" />
               <AlertDescription>
                 Remember to attend all classes for optimal learning!
               </AlertDescription>
             </Alert>
-          )}
+          )} */}
 
           {role === "administrator" && (
             <div className="space-y-6">
